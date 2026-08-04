@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en" class="dark bg-background">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link id="app-favicon" rel="icon" type="image/png" href="/icon-dark.png" />
+    <link rel="apple-touch-icon" href="/icon-dark.png" />
+    <title>Sylva Signer</title>
+    <script>
+      (function () {
+        try {
+          var theme = localStorage.getItem("sylva-theme");
+          var root = document.documentElement;
+          root.classList.remove("light", "dark");
+          var selectedTheme = theme === "light" ? "light" : "dark";
+          root.classList.add(selectedTheme);
+          document.getElementById("app-favicon").href =
+            selectedTheme === "light" ? "/icon-light.png" : "/icon-dark.png";
+        } catch (error) {}
+      })();
+    </script>
+  </head>
+  <body class="font-sans antialiased">
+    <div id="app"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
