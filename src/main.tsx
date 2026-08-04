@@ -1,18 +1,21 @@
 import React from 'react'
 import { createRoot } from 'react-dom/client'
-import { inject } from '@vercel/analytics'
-import { SpeedInsights } from '@vercel/speed-insights/react'
 import './styles.css'
-import { SylvaSigner } from '@/components/sylva-signer'
-
-inject()
+import { LocalIpaSigner } from '@/components/local-ipa-signer'
 
 const root = document.querySelector<HTMLDivElement>('#app')
 if (!root) throw new Error('Missing app root')
 
 createRoot(root).render(
-  <>
-    <SylvaSigner />
-    <SpeedInsights />
-  </>
+  <React.StrictMode>
+    <LocalIpaSigner />
+  </React.StrictMode>,
 )
+
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    void navigator.serviceWorker.register('/sw.js').catch(() => {
+      // Signing still works without offline shell caching.
+    })
+  })
+}
