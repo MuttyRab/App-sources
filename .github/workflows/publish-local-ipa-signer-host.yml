@@ -1,0 +1,67 @@
+name: Publish Local IPA Signer Host
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/publish-local-ipa-signer-host.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out signer source
+        uses: actions/checkout@v4
+        with:
+          ref: local-ipa-signer
+          fetch-depth: 0
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+
+      - name: Install and build
+        run: |
+          npm ci
+          npm run licenses:check
+          npm run build
+
+      - name: Remove unused experimental runtimes
+        run: |
+          rm -f dist/wasm/zsign-opfs.mjs dist/wasm/zsign-opfs.wasm
+          rm -f dist/wasm/zsign-mobile.mjs dist/wasm/.gitkeep
+
+      - name: Publish immutable host branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          staging="$(mktemp -d)"
+          cp -a dist/. "$staging/"
+          git checkout --orphan local-ipa-signer-host-work
+          git rm -rf .
+          cp -a "$staging/." .
+          touch .nojekyll
+          git add -A
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "Publish tested Local IPA Signer web bundle"
+          git push --force origin HEAD:local-ipa-signer-host
+
+      - name: Remove temporary publisher from main
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin main
+          git checkout -B main origin/main
+          if [ -f .github/workflows/publish-local-ipa-signer-host.yml ]; then
+            git rm .github/workflows/publish-local-ipa-signer-host.yml
+            git commit -m "Remove temporary Local IPA Signer publisher"
+            git push origin main
+          fi
