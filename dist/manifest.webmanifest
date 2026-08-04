@@ -1,0 +1,18 @@
+{
+  "name": "Local IPA Signer",
+  "short_name": "IPA Signer",
+  "description": "Privacy-first local IPA re-signing with your own Apple certificate and provisioning profile.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#0b0d10",
+  "theme_color": "#0b0d10",
+  "icons": [
+    {
+      "src": "/icon-dark.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}
