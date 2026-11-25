@@ -82,8 +82,8 @@ func TestCompute_ReasoningModelGetsLongerContext(t *testing.T) {
 	if p.Sampling["top_k"] != 20 || p.SamplingNoThink["top_p"] != 0.8 {
 		t.Fatalf("qwen3 sampling: %v / %v", p.Sampling, p.SamplingNoThink)
 	}
-	if p.Speed != "fast" || !p.ModelTitles {
-		t.Fatalf("speed=%s titles=%v", p.Speed, p.ModelTitles)
+	if p.Speed != "fast" || p.ModelTitles {
+		t.Fatalf("speed=%s titles=%v (tiny models should use simple titles)", p.Speed, p.ModelTitles)
 	}
 }
 

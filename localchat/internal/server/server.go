@@ -479,8 +479,9 @@ func (s *Server) handleInspect(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleLoad(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Path  string         `json:"path"`
-		Prefs *profile.Prefs `json:"prefs"`
+		Path          string         `json:"path"`
+		Prefs         *profile.Prefs `json:"prefs"`
+		IdleUnloadMin *int           `json:"idleUnloadMin"`
 	}
 	if readJSON(r, &req) != nil || req.Path == "" {
 		jsonError(w, 400, "path required")
@@ -496,10 +497,11 @@ func (s *Server) handleLoad(w http.ResponseWriter, r *http.Request) {
 		prefs = *req.Prefs
 	}
 	p := s.profileFor(e, info, prefs)
-	args := p.Args()
-	if sec := s.idleSleepSeconds(); sec > 0 {
-		args = append(args, "--sleep-idle-seconds", fmt.Sprint(sec))
+	sleep := s.idleSleepSeconds()
+	if req.IdleUnloadMin != nil {
+		sleep = *req.IdleUnloadMin * 60
 	}
+	args := withSleep(p.Args(), sleep)
 	// If the first attempt fails, retry with safer settings: an
 	// uncompressed cache (some models can't use q8_0 with their attention
 	// layout), then a minimal context, then without the image add-on.
@@ -509,11 +511,11 @@ func (s *Server) handleLoad(w http.ResponseWriter, r *http.Request) {
 	if safe.Ctx > 4096 {
 		safe.Ctx = 4096
 	}
-	fallbacks = append(fallbacks, withSleep(safe.Args(), s.idleSleepSeconds()))
+	fallbacks = append(fallbacks, withSleep(safe.Args(), sleep))
 	if p.MMProj != "" {
 		noVision := safe
 		noVision.MMProj = ""
-		fallbacks = append(fallbacks, withSleep(noVision.Args(), s.idleSleepSeconds()))
+		fallbacks = append(fallbacks, withSleep(noVision.Args(), sleep))
 	}
 	lm := &loadedModel{Entry: e, Profile: p, Info: info, Prefs: prefs}
 	s.mu.Lock()

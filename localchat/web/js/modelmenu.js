@@ -106,13 +106,17 @@ export async function pickAndLoad() {
 
 export async function loadModel(path) {
   if (S.generating) actions.stop?.();
+  const before = S.engine;
+  // Show the switch right away instead of waiting for the engine's first event.
+  actions.setEngineState?.({ ...S.engine, status: "loading", progress: 0, stage: "starting", error: "", errorDetail: "", modelPath: path });
   try {
-    const r = await api.load(path);
+    const r = await api.load(path, S.settings.perf, S.settings.idleUnloadMin);
     S.model = r;
     S.props = null;
     actions.updateSettingsSilently?.((s) => (s.lastModel = path));
     emit("model");
   } catch (e) {
+    actions.setEngineState?.(before);
     toast(e.message, { kind: "error", timeout: 7000 });
   }
 }

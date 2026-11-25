@@ -107,6 +107,7 @@ Object.assign(actions, {
   loadModel: (path) => loadModel(path),
   stop: () => stop(),
   updateSettingsSilently: (fn) => updateSettings(fn),
+  setEngineState: (st) => onEngine(st, true),
 });
 
 function chatToMarkdown(c) {
@@ -203,7 +204,13 @@ function renderAll() {
 // ---------- engine events ----------
 
 let lastStatus = "";
-async function onEngine(st) {
+let lastSeq = -1;
+async function onEngine(st, local = false) {
+  // Ignore stale server events that arrive after a newer one.
+  if (!local && typeof st.seq === "number") {
+    if (st.seq <= lastSeq && st.status === S.engine.status) return;
+    lastSeq = st.seq;
+  }
   const prev = lastStatus;
   S.engine = st;
   lastStatus = st.status;

@@ -229,7 +229,8 @@ func Compute(m *gguf.Info, totalSize, mmprojSize int64, mmproj string, h hw.Info
 	pr.Speed = SpeedLabel(pr.EstTPS)
 
 	pr.Sampling, pr.SamplingNoThink = recommendedSampling(m)
-	pr.ModelTitles = pr.EstTPS >= 8 && pr.CacheRAMMiB > 0
+	// Tiny models write poor titles; slow PCs shouldn't spend time on them.
+	pr.ModelTitles = pr.EstTPS >= 8 && pr.CacheRAMMiB > 0 && m.Params >= 1_500_000_000
 	return pr
 }
 
