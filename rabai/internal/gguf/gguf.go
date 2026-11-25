@@ -83,6 +83,16 @@ type Info struct {
 
 	SplitCount uint32 `json:"splitCount"`
 	SplitIndex uint32 `json:"splitIndex"`
+
+	// Tensors lists every tensor's name and shape (used to recognise image
+	// generation models, which have no architecture metadata).
+	Tensors []Tensor `json:"-"`
+}
+
+// Tensor is a tensor's name and shape, innermost dimension first (GGUF order).
+type Tensor struct {
+	Name string
+	Dims []uint64
 }
 
 type reader struct {
@@ -346,9 +356,12 @@ func Read(src io.Reader) (*Info, error) {
 			return nil, fmt.Errorf("corrupt file: tensor %q has %d dims", name, nd)
 		}
 		count := uint64(1)
+		dims := make([]uint64, nd)
 		for d := uint32(0); d < nd; d++ {
-			count *= r.u64()
+			dims[d] = r.u64()
+			count *= dims[d]
 		}
+		info.Tensors = append(info.Tensors, Tensor{Name: name, Dims: dims})
 		r.u32() // ggml type
 		r.u64() // data offset
 		total += count

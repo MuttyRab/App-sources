@@ -1,17 +1,17 @@
 // The message box: typing, attachments, the Think toggle, send and stop.
 import { S, caps, emit, on, updateSettings } from "./state.js";
-import { send, stop, thinkingEnabled } from "./chat.js";
+import { send, stop, thinkingEnabled, fileKind } from "./chat.js";
 import { h, $, formatBytes, mod } from "./util.js";
 import { icon } from "./icons.js";
 import { openMenu, toast } from "./ui.js";
+import { readAttachment, isAttachError, kindOf, mediaUrl, mediaDataUrl } from "./attach.js";
+import { imagesReady, defaultImageModel, SIZES } from "./images.js";
 
-const TEXT_EXT = /\.(txt|md|markdown|csv|tsv|json|jsonl|xml|html?|css|js|mjs|cjs|ts|tsx|jsx|py|rb|go|rs|java|kt|c|h|cpp|hpp|cc|cs|php|sh|bash|ps1|bat|sql|yaml|yml|toml|ini|cfg|conf|log|tex|r|swift|lua|pl|dart|scala|vue|svelte|srt|vtt|rst|org)$/i;
-const CODE_EXT = /\.(json|xml|html?|css|js|mjs|cjs|ts|tsx|jsx|py|rb|go|rs|java|kt|c|h|cpp|hpp|cc|cs|php|sh|bash|ps1|bat|sql|yaml|yml|toml|lua|pl|dart|scala|vue|svelte|swift|r)$/i;
-const MAX_TEXT = 2 * 1024 * 1024;
 const PASTE_TO_FILE = 10000;
 
-let el, ta, chips, sendBtn, thinkPill, plusBtn, fileInput;
+let el, ta, chips, sendBtn, thinkPill, imagePill, plusBtn, fileInput;
 let attachments = [];
+let imageMode = null; // { size } while "Create image" is on
 
 export function composerEl() {
   return el;
@@ -46,13 +46,14 @@ export function buildComposer() {
   fileInput = h("input", { type: "file", multiple: true, hidden: true, onchange: () => addFiles([...fileInput.files]).finally(() => (fileInput.value = "")) });
   plusBtn = h("button", { type: "button", class: "icon-btn", "aria-label": "Add photos and files", "data-tip": "Add photos and files", html: icon("plus", 20), onclick: openPlusMenu });
   thinkPill = h("button", { type: "button", class: "tool-pill", hidden: true, onclick: toggleThink });
+  imagePill = h("div", { class: "tool-pill image-pill on", hidden: true });
   sendBtn = h("button", { type: "button", class: "send-btn", "aria-label": "Send message", "data-tip": "Send", onclick: onSendClick });
   el = h(
     "div",
     { class: "composer" },
     chips,
     h("div", { class: "composer-input-row" }, ta),
-    h("div", { class: "composer-row" }, plusBtn, thinkPill, h("div", { class: "spacer" }), sendBtn),
+    h("div", { class: "composer-row" }, plusBtn, thinkPill, imagePill, h("div", { class: "spacer" }), sendBtn),
     fileInput,
   );
   installDragDrop();
@@ -60,8 +61,47 @@ export function buildComposer() {
   on("caps", update);
   on("settings", update);
   on("engine", update);
+  on("images", update);
+  on("edit-picture", async ({ media, prompt }) => {
+    try {
+      const dataUrl = await mediaDataUrl(media);
+      attachments = attachments.filter((a) => a.type !== "image");
+      attachments.push({ type: "image", name: "Picture to edit", dataUrl, fromPrompt: prompt });
+      setImageMode(true);
+      renderChips();
+      ta.value = "";
+      ta.placeholder = "Describe the changes";
+      autosize();
+      update();
+      focusComposer();
+    } catch {
+      toast("Couldn't open that picture.");
+    }
+  });
   update();
   return el;
+}
+
+/** Turns "Create image" mode on or off. */
+export function setImageMode(on, size) {
+  if (on && !imagesReady()) {
+    emit("need-image-model");
+    return;
+  }
+  imageMode = on ? { size: size || imageMode?.size || S.settings.images.size || "square" } : null;
+  update();
+  focusComposer();
+}
+
+function renderImagePill() {
+  imagePill.hidden = !imageMode;
+  if (!imageMode) return;
+  const size = SIZES.find((x) => x.id === imageMode.size) || SIZES[0];
+  imagePill.replaceChildren(
+    h("button", { type: "button", class: "pill-main", "aria-label": "Picture shape: " + size.label, "data-tip": "Picture shape", onclick: (e) => openMenu(e.currentTarget, [{ heading: "Shape" }, ...SIZES.map((x) => ({ label: x.label, hint: x.hint, icon: x.icon, checked: x.id === imageMode.size, onClick: () => { imageMode.size = x.id; updateSettings((st) => (st.images.size = x.id)); renderImagePill(); } }))], { side: "top" }) },
+      h("span", { html: icon("image", 18) }), h("span", { text: "Image" }), h("span", { class: "pill-sub", text: size.hint })),
+    h("button", { type: "button", class: "pill-x", "aria-label": "Turn off image mode", "data-tip": "Turn off", html: icon("x", 14), onclick: () => setImageMode(false) }),
+  );
 }
 
 function autosize() {
@@ -91,7 +131,11 @@ function update() {
   const effort = S.settings.thinking.effort && c.effortLevels.includes(S.settings.thinking.effort) ? " · " + cap(S.settings.thinking.effort) : "";
   thinkPill.innerHTML = icon("lightbulb", 18) + `<span>Think${onNow ? effort : ""}</span>`;
   thinkPill.dataset.tip = onNow ? "The model thinks before answering. Click to turn off" : "Let the model think before answering";
-  ta.placeholder = ready ? "Ask anything" : S.engine.status === "loading" ? "Loading the model…" : "Choose a model to start chatting";
+  if (imageMode) thinkPill.hidden = true;
+  renderImagePill();
+  ta.placeholder = imageMode
+    ? attachments.some((a) => a.type === "image") ? "Describe the changes" : "Describe or edit an image"
+    : ready ? "Ask anything" : S.engine.status === "loading" ? "Loading the model…" : imagesReady() ? "Ask anything, or describe a picture" : "Choose a model to start chatting";
 }
 
 const cap = (s) => s.charAt(0).toUpperCase() + s.slice(1);
@@ -113,8 +157,11 @@ function toggleThink(e) {
 
 function openPlusMenu(e) {
   const c = caps();
+  const can = [c.vision && "pictures", c.audio && "audio", c.vision && "video"].filter(Boolean);
+  const im = defaultImageModel();
   openMenu(e.currentTarget, [
-    { label: "Add photos & files", icon: "paperclip", hint: c.vision ? "Images, text and code files" : "Text and code files (this model can't see images)", onClick: () => fileInput.click() },
+    { label: "Add photos & files", icon: "paperclip", hint: can.length ? `Documents, PDFs, ${can.join(", ")}` : "Documents, PDFs, code, pictures, audio, video", onClick: () => fileInput.click() },
+    { label: "Create image", icon: "image", checked: !!imageMode, hint: im ? im.name : "Add an image model first", onClick: () => (imagesReady() || imageMode ? setImageMode(!imageMode) : emit("need-image-model")) },
     c.reasoning ? { label: "Think", icon: "lightbulb", checked: thinkingEnabled(), hint: "Reason step by step before answering", onClick: () => updateSettings((s) => (s.thinking.enabled = !s.thinking.enabled)) } : null,
   ], { side: "top" });
 }
@@ -143,7 +190,7 @@ function submit() {
   if (!canSend()) return;
   const text = ta.value.trim();
   const atts = attachments.map(({ loading, ...a }) => a);
-  if (send({ text, attachments: atts })) {
+  if (send({ text, attachments: atts, image: imageMode ? { size: imageMode.size } : null })) {
     ta.value = "";
     attachments = [];
     renderChips();
@@ -160,11 +207,13 @@ function renderChips() {
     ...attachments.map((a, i) => {
       const remove = h("button", { type: "button", class: "x", "aria-label": `Remove ${a.name}`, html: icon("x", 14), onclick: () => (attachments.splice(i, 1), renderChips(), update()) });
       if (a.type === "image") return h("div", { class: "chip image" }, h("img", { src: a.dataUrl, alt: a.name }), remove);
+      if (a.type === "video" && a.frames?.length) return h("div", { class: "chip image video" }, h("img", { src: mediaUrl(a.frames[0].media), alt: a.name }), h("span", { class: "chip-badge", html: icon("film", 14) }), remove);
+      const [kind, ico, cls] = a.loading ? ["Reading…", "loader-circle", "text"] : fileKind(a);
       return h(
         "div",
         { class: "chip" },
-        h("div", { class: "att-ico", html: icon(a.code ? "file-code" : "file-text", 18), style: a.code ? "background:#0285ff" : "" }),
-        h("div", { style: "min-width:0" }, h("div", { class: "chip-name", text: a.name }), h("div", { class: "chip-kind", text: a.loading ? "Reading…" : formatBytes(a.size || a.text?.length || 0) })),
+        h("div", { class: "att-ico " + cls + (a.loading ? " spin" : ""), html: icon(ico, 18) }),
+        h("div", { style: "min-width:0" }, h("div", { class: "chip-name", text: a.name }), h("div", { class: "chip-kind", text: a.loading ? kind : a.type === "text" ? `${kind} · ${formatBytes(a.size || a.text?.length || 0)}` : kind })),
         remove,
       );
     }),
@@ -172,57 +221,39 @@ function renderChips() {
 }
 
 async function addFiles(files) {
-  for (const f of files) {
-    if (/^image\//.test(f.type)) {
-      if (!caps().vision) {
-        toast(S.engine.status === "ready" ? "This model can't see images. Load a vision model (one with an mmproj file next to it) to send pictures." : "Load a model first.");
-        continue;
+  const maxImageDim = (S.hw?.physical || 4) <= 4 ? 896 : 1280;
+  const notes = new Set();
+  await Promise.all(
+    files.map(async (f) => {
+      const kind = kindOf(f);
+      const placeholder = { type: "loading", name: f.name, loading: true, size: f.size };
+      if (kind && kind !== "image" && kind !== "text") {
+        attachments.push(placeholder);
+        renderChips();
+        update();
       }
       try {
-        attachments.push({ type: "image", name: f.name || "Image", dataUrl: await shrinkImage(f) });
-      } catch {
-        toast(`Couldn't read ${f.name}.`);
+        const a = await readAttachment(f, { maxImageDim });
+        const i = attachments.indexOf(placeholder);
+        if (i >= 0) attachments.splice(i, 1, a);
+        else attachments.push(a);
+        const c = caps();
+        const ready = S.engine.status === "ready";
+        if (a.type === "image" && ready && !c.vision && !imageMode) notes.add("This model can't see pictures. It will be told one was attached; load a vision model to have it look at them.");
+        if (a.type === "audio" && ready && !c.audio) notes.add("This model can't listen to audio. Load a model that understands audio (for example Qwen2.5-Omni, Voxtral or Ultravox with its mmproj file) to use recordings.");
+        if (a.type === "video" && ready && !c.vision) notes.add("This model can't see video. Load a vision model to have it watch the frames.");
+        if (a.cut) notes.add(`${a.name} is long; only the first part was added.`);
+      } catch (e) {
+        const i = attachments.indexOf(placeholder);
+        if (i >= 0) attachments.splice(i, 1);
+        toast(isAttachError(e) ? e.message : `Couldn't read ${f.name}.`);
       }
-    } else if (/\.pdf$/i.test(f.name) || f.type === "application/pdf") {
-      toast("PDF files aren't supported yet. Copy the text you need and paste it here.");
-    } else if (TEXT_EXT.test(f.name) || /^text\//.test(f.type) || f.type === "application/json") {
-      if (f.size > MAX_TEXT) {
-        toast(`${f.name} is too large (${formatBytes(f.size)}). The limit is 2 MB.`);
-        continue;
-      }
-      attachments.push({ type: "text", name: f.name, text: await f.text(), size: f.size, code: CODE_EXT.test(f.name) });
-    } else {
-      toast(`${f.name} can't be attached. Use images, text or code files.`);
-    }
-  }
-  renderChips();
-  update();
+      renderChips();
+      update();
+    }),
+  );
+  notes.forEach((n) => toast(n, { timeout: 6000 }));
   focusComposer();
-}
-
-/** Scales images down before sending: fewer image tokens, faster on CPU. */
-async function shrinkImage(file) {
-  const url = URL.createObjectURL(file);
-  try {
-    const img = await new Promise((res, rej) => {
-      const i = new Image();
-      i.onload = () => res(i);
-      i.onerror = rej;
-      i.src = url;
-    });
-    const maxDim = (S.hw?.physical || 4) <= 4 ? 896 : 1280;
-    const scale = Math.min(1, maxDim / Math.max(img.naturalWidth, img.naturalHeight));
-    const c = document.createElement("canvas");
-    c.width = Math.max(1, Math.round(img.naturalWidth * scale));
-    c.height = Math.max(1, Math.round(img.naturalHeight * scale));
-    const ctx = c.getContext("2d");
-    ctx.fillStyle = "#fff";
-    ctx.fillRect(0, 0, c.width, c.height);
-    ctx.drawImage(img, 0, 0, c.width, c.height);
-    return c.toDataURL("image/jpeg", 0.86);
-  } finally {
-    URL.revokeObjectURL(url);
-  }
 }
 
 function onPaste(e) {
@@ -256,6 +287,7 @@ function installDragDrop() {
     }
   };
   const hasFiles = (e) => [...(e.dataTransfer?.types || [])].includes("Files");
+  // GGUF and safetensors files are models, not attachments.
   document.addEventListener("dragenter", (e) => {
     if (!hasFiles(e)) return;
     e.preventDefault();
@@ -274,8 +306,8 @@ function installDragDrop() {
     depth = 0;
     show(false);
     const files = [...e.dataTransfer.files];
-    if (files.some((f) => /\.gguf$/i.test(f.name))) {
-      toast("To load a model, use “Browse for a model file” in the model menu.");
+    if (files.some((f) => /\.(gguf|safetensors|sft|ckpt)$/i.test(f.name))) {
+      toast("To add a model, use “Add model files” in the model menu.");
       return;
     }
     addFiles(files);

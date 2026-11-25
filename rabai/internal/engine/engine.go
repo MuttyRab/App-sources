@@ -62,12 +62,23 @@ type State struct {
 }
 
 // LoadRequest describes a model start. Fallbacks are alternative argument
-// sets tried in order when the engine fails to start with Args.
+// sets tried in order when the engine fails to start with Args. Env adds
+// environment variables to the engine; FallbackEnv[i], when present, replaces
+// Env for Fallbacks[i].
 type LoadRequest struct {
-	ModelPath string
-	Args      []string
-	Fallbacks [][]string
-	Tag       any // opaque value returned with OnReady
+	ModelPath   string
+	Args        []string
+	Env         []string
+	Fallbacks   [][]string
+	FallbackEnv [][]string
+	Tag         any // opaque value returned with OnReady
+}
+
+func (r LoadRequest) envFor(attempt int) []string {
+	if attempt > 0 && attempt-1 < len(r.FallbackEnv) && r.FallbackEnv[attempt-1] != nil {
+		return r.FallbackEnv[attempt-1]
+	}
+	return r.Env
 }
 
 // Manager owns the engine process.
@@ -103,6 +114,9 @@ func New(exe, logDir string, appPort int) *Manager {
 		subs:    map[chan State]struct{}{},
 	}
 }
+
+// Exe is the engine executable's path.
+func (m *Manager) Exe() string { return m.exe }
 
 // State returns the current state.
 func (m *Manager) State() State {
@@ -166,12 +180,102 @@ func (m *Manager) Load(req LoadRequest) {
 			if !m.current(gen) {
 				return
 			}
-			ok := m.run(gen, req, args, i)
+			ok := m.run(gen, req, args, req.envFor(i), i)
 			if ok || !m.current(gen) {
 				return
 			}
 		}
 	}()
+}
+
+// Prepare shows a loading state for modelPath while RabAI gets ready to start
+// it (for example while it tests the graphics card), stopping any running
+// model. The returned function updates the stage and progress; it returns
+// false once Load or Unload has superseded this preparation.
+func (m *Manager) Prepare(modelPath, stage string) func(stage string, progress float64) bool {
+	m.mu.Lock()
+	m.gen++
+	gen := m.gen
+	old := m.cur
+	m.cur = nil
+	m.setLocked(func(s *State) {
+		*s = State{Seq: s.Seq, Status: StatusLoading, ModelPath: modelPath, Stage: stage}
+	})
+	m.mu.Unlock()
+	stopProc(old)
+	return func(stage string, progress float64) bool {
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		if m.gen != gen {
+			return false
+		}
+		m.setLocked(func(s *State) { s.Stage, s.Progress = stage, progress })
+		return true
+	}
+}
+
+// Probe starts a separate engine process for modelPath with extra flags and
+// environment, waits until it can answer, calls fn with its address and
+// stops it. It is used to test a configuration without disturbing the
+// manager's state. The process log goes to engine-probe.log.
+func (m *Manager) Probe(ctx context.Context, modelPath string, extra, env []string, fn func(baseURL string) error) error {
+	port, err := freePort()
+	if err != nil {
+		return err
+	}
+	args := append(baseArgs(modelPath, port), extra...)
+	logf, _ := os.Create(filepath.Join(filepath.Dir(m.logPath), "engine-probe.log"))
+	if logf != nil {
+		defer logf.Close()
+		fmt.Fprintf(logf, "%s %s\n%s\n\n", m.exe, strings.Join(args, " "), strings.Join(env, " "))
+	}
+	cmd := exec.Command(m.exe, args...)
+	cmd.Dir = filepath.Dir(m.exe)
+	cmd.Env = append(append(os.Environ(), envRouterPort+"="+strconv.Itoa(m.appPort)), env...)
+	stdin, _ := cmd.StdinPipe()
+	if logf != nil {
+		cmd.Stdout, cmd.Stderr = logf, logf
+	}
+	prepareCmd(cmd)
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+	afterStart(cmd)
+	p := &proc{cmd: cmd, stdin: stdin, done: make(chan struct{})}
+	go func() { cmd.Wait(); close(p.done) }()
+	defer stopProc(p)
+
+	url := "http://127.0.0.1:" + strconv.Itoa(port)
+	client := &http.Client{Timeout: 2 * time.Second}
+	deadline := time.Now().Add(10 * time.Minute)
+	for {
+		if resp, err := client.Get(url + "/health"); err == nil {
+			resp.Body.Close()
+			if resp.StatusCode == 200 {
+				break
+			}
+		}
+		select {
+		case <-p.done:
+			return errors.New("the engine stopped while loading")
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(300 * time.Millisecond):
+		}
+		if time.Now().After(deadline) {
+			return errors.New("the engine took too long to load")
+		}
+	}
+	errc := make(chan error, 1)
+	go func() { errc <- fn(url) }()
+	select {
+	case err := <-errc:
+		return err
+	case <-p.done:
+		return errors.New("the engine stopped while running the test")
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 // Unload stops the running model.
@@ -196,14 +300,10 @@ func (m *Manager) current(gen int64) bool {
 
 // run starts one attempt and blocks until the model is ready (true) or the
 // attempt failed (false).
-func (m *Manager) run(gen int64, req LoadRequest, extra []string, attempt int) bool {
-	port, err := freePort()
-	if err != nil {
-		m.fail(gen, "Couldn't reserve a local port for the engine.", err.Error())
-		return false
-	}
-	args := append([]string{
-		"-m", req.ModelPath,
+// baseArgs are the flags every engine start uses.
+func baseArgs(model string, port int) []string {
+	return []string{
+		"-m", model,
 		"--host", "127.0.0.1",
 		"--port", strconv.Itoa(port),
 		"--no-webui",
@@ -212,17 +312,26 @@ func (m *Manager) run(gen int64, req LoadRequest, extra []string, attempt int) b
 		"-fa", "auto",
 		"--log-colors", "off",
 		"--no-log-timestamps",
-	}, extra...)
+	}
+}
+
+func (m *Manager) run(gen int64, req LoadRequest, extra, env []string, attempt int) bool {
+	port, err := freePort()
+	if err != nil {
+		m.fail(gen, "Couldn't reserve a local port for the engine.", err.Error())
+		return false
+	}
+	args := append(baseArgs(req.ModelPath, port), extra...)
 
 	logf, _ := os.Create(m.logPath)
 	if logf != nil {
-		fmt.Fprintf(logf, "%s %s\n\n", m.exe, strings.Join(args, " "))
+		fmt.Fprintf(logf, "%s %s\n%s\n\n", m.exe, strings.Join(args, " "), strings.Join(env, " "))
 	}
 	tail := newRingBuffer(60)
 
 	cmd := exec.Command(m.exe, args...)
 	cmd.Dir = filepath.Dir(m.exe)
-	cmd.Env = append(os.Environ(), envRouterPort+"="+strconv.Itoa(m.appPort))
+	cmd.Env = append(append(os.Environ(), envRouterPort+"="+strconv.Itoa(m.appPort)), env...)
 	stdin, _ := cmd.StdinPipe()
 	stdout, _ := cmd.StdoutPipe()
 	stderr, _ := cmd.StderrPipe()
@@ -542,3 +651,11 @@ func (r *ringBuffer) Lines() []string {
 	defer r.mu.Unlock()
 	return append([]string(nil), r.lines...)
 }
+
+// PrepareCmd configures a helper process the way the engine's own process
+// is: no console window, and killed if RabAI exits. Call AfterStart once the
+// process has started.
+func PrepareCmd(cmd *exec.Cmd) { prepareCmd(cmd) }
+
+// AfterStart ties a started helper process to RabAI's lifetime.
+func AfterStart(cmd *exec.Cmd) { afterStart(cmd) }

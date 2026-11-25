@@ -312,3 +312,8 @@ document.addEventListener("mouseover", (e) => {
 document.addEventListener("pointerdown", hideTip, true);
 document.addEventListener("keydown", hideTip, true);
 window.addEventListener("blur", hideTip);
+
+/** Shows technical details (engine logs) in a dialog. */
+export function showDetails(title, text) {
+  openModal({ title, className: "modal-details", content: h("pre", { class: "details-pre", text }) });
+}

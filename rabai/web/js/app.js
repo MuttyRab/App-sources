@@ -1,6 +1,7 @@
 // Entry point: boots the app, wires modules together and renders the shell.
 import { S, actions, emit, on, loadSettings, updateSettings, applyTheme } from "./state.js";
 import { api, subscribeEvents } from "./api.js";
+import { refreshImages, imagesReady } from "./images.js";
 import { h, $, copyText, mod } from "./util.js";
 import { icon } from "./icons.js";
 import { toast, openMenu, openModal, closeMenu, promptDialog } from "./ui.js";
@@ -116,7 +117,7 @@ Object.assign(actions, {
     emit("chats");
   },
   openModelMenu: (anchor, side) => openModelMenu(anchor || $(".model-switch"), side),
-  openModelsManager: () => openModelsManager(),
+  openModelsManager: (tab) => openModelsManager(tab),
   hasMessages: () => activePath().length > 0,
   openSettings: (tab) => (closeMenu(), openSettings(tab)),
   openShortcuts: () => openShortcuts(),
@@ -190,7 +191,7 @@ function renderMain() {
     const title = S.temporary
       ? h("div", {}, h("h1", { class: "hero-title", text: "Temporary chat", style: "margin-bottom:8px" }), h("p", { style: "color:var(--text-2);text-align:center;margin:0 0 24px", text: "This chat won't appear in your history or be saved." }))
       : h("h1", { class: "hero-title", text: heroText });
-    heroEl = h("div", { class: "hero" }, pre || title, pre && S.engine.status !== "idle" ? h("div", { style: "height:24px" }) : null, S.engine.status === "idle" && !S.model ? null : h("div", { class: "dock-inner" }, comp));
+    heroEl = h("div", { class: "hero" }, pre || title, pre && S.engine.status !== "idle" ? h("div", { style: "height:24px" }) : null, S.engine.status === "idle" && !S.model && !imagesReady() ? null : h("div", { class: "dock-inner" }, comp));
     content.replaceChildren(heroEl, $("#thread") || h("div", { class: "thread", id: "thread" }));
     dock.replaceChildren();
   } else {
@@ -317,6 +318,16 @@ function installGlobalHandlers() {
     toast(S.engine.status === "error" ? "The model didn't load. Choose a model to continue." : "Choose a model to start chatting.");
     openModelMenu($(".model-switch"));
   });
+  on("need-image-model", () => {
+    const n = S.images?.models?.length || 0;
+    if (!S.images?.available) toast("This version of RabAI can't make pictures.");
+    else toast(n ? "The image model still needs some files. Open Models to finish setting it up." : "Add an image model to make pictures. Open Models → Add model files.");
+    actions.openModelsManager?.("images");
+  });
+  on("open-image-models", () => actions.openModelsManager?.("images"));
+  on("images", () => {
+    if (activePath().length === 0 && S.engine.status === "idle") renderMain();
+  });
   on("edit-last", () => {
     const btns = document.querySelectorAll('.turn.user button[aria-label="Edit message"]');
     btns[btns.length - 1]?.click();
@@ -365,13 +376,14 @@ async function boot() {
     S.engine = st.engine || { status: "idle" };
     lastStatus = S.engine.status;
     S.model = st.model || null;
+    S.gpu = st.gpu || null;
     emit("hw");
   } catch (e) {
     toast("Couldn't reach RabAI's engine manager: " + e.message, { kind: "error" });
   }
   S.chats = (await api.chats().catch(() => [])) || [];
   emit("chats");
-  await refreshModels();
+  await Promise.all([refreshModels(), refreshImages()]);
   renderAll();
   subscribeEvents((ev) => {
     if (ev.type === "engine") onEngine(ev.data);
@@ -379,6 +391,11 @@ async function boot() {
       S.model = ev.data;
       emit("model");
       emit("caps");
+    } else if (ev.type === "image") emit("image-event", ev.data);
+    else if (ev.type === "images") refreshImages();
+    else if (ev.type === "gpu") {
+      S.gpu = ev.data;
+      emit("gpu");
     }
   });
   if (S.engine.status === "ready") {

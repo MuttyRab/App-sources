@@ -4,7 +4,9 @@ import { api, streamChat } from "./api.js";
 import { h, $, uid, copyText, plainText, estimateTokens, formatDuration, clamp } from "./util.js";
 import { renderInto, resetRender } from "./markdown.js";
 import { icon } from "./icons.js";
-import { toast, openMenu } from "./ui.js";
+import { toast, openMenu, showDetails } from "./ui.js";
+import { imagesReady, isImageRequest, promptFromRequest, looksLikeFollowUp, sizeFromText, IMAGE_TOOL, parseImageCall, runImageJob, imageCard, imageCaption, defaultImageModel } from "./images.js";
+import { mediaDataUrl, mediaUrl } from "./attach.js";
 
 // ---------- tree ----------
 
@@ -101,21 +103,44 @@ function renderTurn(m, isLast) {
   return el;
 }
 
+const DOC_KINDS = { pdf: ["PDF", "file-text", "pdf"], docx: ["Word document", "file-text", "doc"], odt: ["Document", "file-text", "doc"], xlsx: ["Spreadsheet", "file-spreadsheet", "sheet"], ods: ["Spreadsheet", "file-spreadsheet", "sheet"], pptx: ["Presentation", "presentation", "slides"], odp: ["Presentation", "presentation", "slides"] };
+
+/** Kind label, icon and colour class for a file attachment. */
+export function fileKind(a) {
+  if (a.type === "audio") return ["Audio" + (a.duration ? " · " + formatDuration(a.duration * 1000) : ""), "file-audio", "audio"];
+  if (a.type === "video") return ["Video" + (a.duration ? " · " + formatDuration(a.duration * 1000) : ""), "film", "video"];
+  if (a.doc && DOC_KINDS[a.doc]) return DOC_KINDS[a.doc];
+  return a.code ? ["Code", "file-code", "code"] : ["Document", "file-text", "text"];
+}
+
 function attachmentsView(atts = []) {
   if (!atts.length) return null;
   return h(
     "div",
     { class: "attachments" },
-    atts.map((a) =>
-      a.type === "image"
-        ? h("img", { class: "att-thumb", src: a.dataUrl, alt: a.name || "Image", onclick: () => emit("lightbox", a.dataUrl) })
-        : h(
-            "div",
-            { class: "att-file" },
-            h("div", { class: "att-ico " + (a.code ? "code" : "text"), html: icon(a.code ? "file-code" : "file-text", 20) }),
-            h("div", { class: "att-meta" }, h("div", { class: "att-name", text: a.name }), h("div", { class: "att-kind", text: a.code ? "Code" : "Document" })),
-          ),
-    ),
+    atts.map((a) => {
+      if (a.type === "image") return h("img", { class: "att-thumb", src: a.dataUrl, alt: a.name || "Image", onclick: () => emit("lightbox", a.dataUrl) });
+      if (a.type === "video" && a.frames?.length) {
+        return h(
+          "div",
+          { class: "att-video" },
+          h("div", { class: "att-frames" }, a.frames.slice(0, 4).map((f) => h("img", { src: mediaUrl(f.media), alt: "", loading: "lazy" }))),
+          h("div", { class: "att-meta" }, h("div", { class: "att-name", text: a.name }), h("div", { class: "att-kind", text: fileKind(a)[0] })),
+        );
+      }
+      const [kind, ico, cls] = fileKind(a);
+      return h(
+        "div",
+        { class: "att-file" },
+        h("div", { class: "att-ico " + cls, html: icon(ico, 20) }),
+        h(
+          "div",
+          { class: "att-meta" },
+          h("div", { class: "att-name", text: a.name }),
+          a.type === "audio" && a.media ? h("audio", { class: "att-audio", controls: true, preload: "none", src: mediaUrl(a.media), "aria-label": "Play " + a.name }) : h("div", { class: "att-kind", text: kind }),
+        ),
+      );
+    }),
   );
 }
 
@@ -274,12 +299,21 @@ function fillAssistant(el, m, isLast) {
   } else if (m.status === "streaming" && m.progress && !m.content && !m.reasoning) {
     const pct = Math.round(m.progress * 100);
     body.append(h("div", { class: "progress-note" }, h("span", { class: "shimmer", text: "Reading" }), h("div", { class: "bar" }, h("i", { style: `width:${pct}%` })), h("span", { text: pct + "%" })));
-  } else if (m.status === "streaming" && !m.content && !m.reasoning) {
+  } else if (m.status === "streaming" && !m.content && !m.reasoning && !m.image) {
     body.append(h("div", { class: "dots", "aria-label": "Waiting for the reply" }, h("span", { class: "dot" })));
   }
   const md = h("div", { class: "markdown" });
   if (m.content) renderInto(md, m.content, m.status === "streaming");
   body.append(md);
+  if (m.image) {
+    const slot = h("div", { class: "gen-slot" }, imageCard(m, imageHandlers));
+    body.append(slot);
+    el._gen = slot;
+    const cap = imageCaption(m.image);
+    if (cap) body.append(h("div", { class: "gen-caption", text: cap }));
+  } else {
+    el._gen = null;
+  }
   if (m.error) {
     body.append(
       h(
@@ -301,13 +335,49 @@ function fillAssistant(el, m, isLast) {
   } else if (m.stopped && !m.content) {
     body.append(h("div", { class: "notice" }, h("span", { html: icon("info", 18) }), h("div", { text: "You stopped this reply." })));
   }
+  const gen = el._gen;
   el.replaceChildren(body);
   el._md = md;
+  el._gen = gen;
   if (m.status !== "streaming") el.append(assistantActions(m));
   el.classList.toggle("latest", !!isLast);
 }
 
+const imageHandlers = {
+  retry: (m) => regenerate(m),
+  details: (text) => showDetails("Image engine details", text),
+  download: (m) => downloadImage(m),
+};
+
+async function downloadImage(m) {
+  const img = m.image;
+  if (!img?.media) return;
+  try {
+    const name = (img.prompt || "picture").replace(/[^\w\- ]+/g, "").trim().slice(0, 40) || "picture";
+    const r = await api.saveMedia(name + ".png", "png", img.media);
+    if (r?.path) toast("Saved", { action: { label: "Show in folder", onClick: () => api.reveal(r.path) } });
+  } catch (e) {
+    toast("Couldn't save the picture: " + e.message, { kind: "error" });
+  }
+}
+
+/** Starts a new chat message that edits a picture (image mode, picture attached). */
+function editPicture(m) {
+  emit("edit-picture", { media: m.image.media, prompt: m.image.prompt });
+}
+
 function assistantActions(m) {
+  if (m.image?.status === "done") {
+    return h(
+      "div",
+      { class: "msg-actions" },
+      actionBtn("download", "Download", () => downloadImage(m)),
+      actionBtn("copy", "Copy prompt", (e) => copyWithFeedback(e.currentTarget, m.image.prompt)),
+      actionBtn("pencil", "Edit picture", () => editPicture(m)),
+      actionBtn("refresh-cw", "Make another", () => regenerate(m)),
+      versionNav(m),
+    );
+  }
   const stats = m.stats && S.settings.showStats ? statsText(m.stats) : "";
   const models = new Set(activePath().filter((x) => x.role === "assistant" && x.model).map((x) => x.model));
   return h(
@@ -420,9 +490,30 @@ export function scrollToBottom(force = false) {
 
 // ---------- context management ----------
 
-function toApiMessage(m, vision) {
-  if (m.role === "assistant") return { role: "assistant", content: (m.content || "").replace(/<think>[\s\S]*?<\/think>\s*/g, "") };
+async function toApiMessage(m, vision, audio) {
+  if (m.role === "assistant") {
+    let content = (m.content || "").replace(/<think>[\s\S]*?<\/think>\s*/g, "");
+    if (m.image?.status === "done") content += `${content ? "\n\n" : ""}[I created a picture: "${m.image.prompt}"]`;
+    return { role: "assistant", content };
+  }
   let text = m.content || "";
+  const parts = [];
+  for (const a of m.attachments || []) {
+    if (a.type === "audio") {
+      if (audio && a.media) {
+        parts.push({ type: "input_audio", input_audio: { data: await mediaDataUrl(a.media), format: "wav" } });
+      } else {
+        text += `${text ? "\n\n" : ""}[An audio file (${a.name}, ${formatDuration((a.duration || 0) * 1000)}) was attached, but the current model can't listen to audio.]`;
+      }
+    } else if (a.type === "video") {
+      if (vision && a.frames?.length) {
+        for (const f of a.frames) parts.push({ type: "image_url", image_url: { url: await mediaDataUrl(f.media) } });
+        text = `[Video: ${a.name}, ${formatDuration((a.duration || 0) * 1000)} long. The pictures are ${a.frames.length} frames taken at ${a.frames.map((f) => f.t.toFixed(1) + "s").join(", ")}.]` + (text ? "\n\n" + text : "");
+      }
+      if (audio && a.audioMedia) parts.push({ type: "input_audio", input_audio: { data: await mediaDataUrl(a.audioMedia), format: "wav" } });
+      if (!vision && !(audio && a.audioMedia)) text += `${text ? "\n\n" : ""}[A video (${a.name}) was attached, but the current model can't watch video or see images.]`;
+    }
+  }
   const files = (m.attachments || []).filter((a) => a.type === "text");
   if (files.length) {
     const blocks = files.map((f) => {
@@ -435,15 +526,14 @@ function toApiMessage(m, vision) {
   if (imgs.length && !vision) {
     text += `${text ? "\n\n" : ""}[${imgs.length === 1 ? "An image was" : imgs.length + " images were"} attached here, but the current model can't view images.]`;
   }
-  if (imgs.length && vision) {
-    return { role: "user", content: [...imgs.map((i) => ({ type: "image_url", image_url: { url: i.dataUrl } })), { type: "text", text: text || "Describe this image." }] };
-  }
+  if (imgs.length && vision) parts.unshift(...imgs.map((i) => ({ type: "image_url", image_url: { url: i.dataUrl } })));
+  if (parts.length) return { role: "user", content: [...parts, { type: "text", text: text || (imgs.length ? "Describe this image." : "Describe this.") }] };
   return { role: "user", content: text };
 }
 
 function msgTokens(m) {
   if (typeof m.content === "string") return estimateTokens(m.content) + 6;
-  return m.content.reduce((n, p) => n + (p.type === "text" ? estimateTokens(p.text) : 700), 6);
+  return m.content.reduce((n, p) => n + (p.type === "text" ? estimateTokens(p.text) : p.type === "input_audio" ? Math.round(p.input_audio.data.length / 1300) : 700), 6);
 }
 
 /** Drops the oldest turns until the conversation fits the model's context. */
@@ -554,10 +644,21 @@ function waitForEngine(signal, onChange) {
   });
 }
 
+/** Whether a message would be answered with a picture. */
+function wantsPicture(text, imageMode) {
+  if (imageMode) return true;
+  return S.settings.images.auto !== false && imagesReady() && isImageRequest(text);
+}
+
 /** Sends a new user message from the composer. Returns false if not sent. */
-export function send({ text, attachments = [] }) {
+export function send({ text, attachments = [], image = null }) {
   if (S.generating) return false;
-  if (!engineUsable()) {
+  const picture = wantsPicture(text, !!image);
+  if (picture && !imagesReady()) {
+    emit("need-image-model");
+    return false;
+  }
+  if (!picture && !engineUsable()) {
     emit("need-model");
     return false;
   }
@@ -569,8 +670,8 @@ export function send({ text, attachments = [] }) {
   const chat = S.chat;
   const path = activePath(chat);
   const parentId = path.length ? path[path.length - 1].id : "root";
-  const user = addMessage(chat, parentId, { role: "user", content: text, attachments });
-  const asst = addMessage(chat, user.id, { role: "assistant", content: "", reasoning: "", status: "streaming", model: S.model?.entry?.name });
+  const user = addMessage(chat, parentId, { role: "user", content: text, attachments, imageMode: image ? { size: image.size || "" } : undefined });
+  const asst = addMessage(chat, user.id, { role: "assistant", content: "", reasoning: "", status: "streaming", model: picture ? defaultImageModel()?.name : S.model?.entry?.name });
   chat.model = S.model?.entry?.path || chat.model;
   chat.modelName = S.model?.entry?.name || chat.modelName;
   if (!chat.title) chat.title = simpleTitle(text || attachments[0]?.name || "");
@@ -591,18 +692,21 @@ function regenerateWith(m, path) {
 
 export function regenerate(m) {
   if (S.generating) return;
-  if (!engineUsable()) return emit("need-model");
+  const user = S.chat.messages[m.parent];
+  const picture = !!m.image || wantsPicture(user?.content, !!user?.imageMode);
+  if (picture ? !imagesReady() : !engineUsable()) return emit(picture ? "need-image-model" : "need-model");
   const chat = S.chat;
-  const asst = addMessage(chat, m.parent, { role: "assistant", content: "", reasoning: "", status: "streaming", model: S.model?.entry?.name });
+  const asst = addMessage(chat, m.parent, { role: "assistant", content: "", reasoning: "", status: "streaming", model: picture ? defaultImageModel()?.name : S.model?.entry?.name, redoImage: m.image ? { prompt: m.image.prompt, size: m.image.size } : undefined });
   renderThread();
   scrollToBottom(true);
   generate(chat, asst);
 }
 
 function editAndResend(m, text) {
-  if (!engineUsable()) return emit("need-model");
+  const picture = wantsPicture(text, !!m.imageMode);
+  if (picture ? !imagesReady() : !engineUsable()) return emit(picture ? "need-image-model" : "need-model");
   const chat = S.chat;
-  const user = addMessage(chat, m.parent, { role: "user", content: text, attachments: m.attachments || [] });
+  const user = addMessage(chat, m.parent, { role: "user", content: text, attachments: m.attachments || [], imageMode: m.imageMode });
   const asst = addMessage(chat, user.id, { role: "assistant", content: "", reasoning: "", status: "streaming", model: S.model?.entry?.name });
   renderThread();
   scrollToBottom(true);
@@ -705,6 +809,44 @@ function placeCaret(md) {
   if (target && !["PRE", "TABLE"].includes(target.tagName) && !target.closest?.(".code-block, .table-wrap, .katex")) target.append(h("span", { class: "caret", "aria-hidden": "true" }));
 }
 
+/** The picture request a user message makes, or null. */
+function pictureRequest(chat, m) {
+  const path = activePath(chat);
+  const idx = path.findIndex((x) => x.id === m.id);
+  const user = path[idx - 1];
+  if (m.redoImage) return { ...m.redoImage };
+  if (!user || user.role !== "user") return null;
+  if (!wantsPicture(user.content, !!user.imageMode)) return null;
+  const text = user.content || "";
+  const prev = path.slice(0, idx - 1).reverse().find((x) => x.image?.status === "done");
+  let prompt = user.imageMode ? text : promptFromRequest(text);
+  if (prev && looksLikeFollowUp(text) && !user.imageMode) prompt = `${prev.image.prompt}, ${prompt}`;
+  const size = user.imageMode?.size || sizeFromText(text, prev?.image?.size || "square");
+  const init = (user.attachments || []).find((a) => a.type === "image");
+  // Editing a picture RabAI made: describe the whole new picture, so the
+  // model keeps what the change doesn't mention.
+  if (init?.fromPrompt && user.imageMode) prompt = `${init.fromPrompt}, ${promptFromRequest(text) || text}`;
+  return { prompt: prompt || "a beautiful picture", size, init: init?.dataUrl, strength: init ? 0.55 : undefined };
+}
+
+/** Makes a picture for assistant message m. */
+async function generatePicture(chat, m, req, controller) {
+  m.model = defaultImageModel()?.name || m.model;
+  const paint = () => {
+    if (S.chat !== chat) return;
+    const el = turnEls.get(m.id);
+    if (!el) return;
+    if (el._gen && m.image?.status === "running") {
+      el._gen.replaceChildren(imageCard(m, imageHandlers) || "");
+    } else {
+      fillAssistant(el, m, true);
+    }
+    scrollToBottom();
+  };
+  const img = await runImageJob(m, req, paint, controller.signal);
+  if (img.status === "cancelled") m.stopped = true;
+}
+
 async function generate(chat, m, opts = {}) {
   let think = false;
   const controller = new AbortController();
@@ -716,6 +858,11 @@ async function generate(chat, m, opts = {}) {
   m.error = null;
   m.stopped = false;
   try {
+    const pic = !opts.prefill && pictureRequest(chat, m);
+    if (pic) {
+      await generatePicture(chat, m, pic, controller);
+      return;
+    }
     if (!(S.engine.status === "ready" && S.props)) {
       // A model is loading (e.g. the user just switched): wait for it.
       m.waiting = true;
@@ -728,10 +875,10 @@ async function generate(chat, m, opts = {}) {
       rerender(m);
     }
     think = thinkingEnabled();
-    const vision = caps().vision;
+    const { vision, audio } = caps();
     const path = activePath(chat);
     const idx = path.findIndex((x) => x.id === m.id);
-    const history = path.slice(0, opts.prefill ? idx + 1 : idx).map((msg) => ({ msg, api: toApiMessage(msg, vision) }));
+    const history = await Promise.all(path.slice(0, opts.prefill ? idx + 1 : idx).map(async (msg) => ({ msg, api: await toApiMessage(msg, vision, audio) })));
     if (opts.prefill) history[history.length - 1].api.content = m.content;
     const sys = systemPrompt();
     const fit = await fitContext(history, sys, think);
@@ -746,6 +893,13 @@ async function generate(chat, m, opts = {}) {
       if (S.chat === chat) renderThread();
     }
     const body = { messages: (sys ? [{ role: "system", content: sys }] : []).concat(fit.history.map((x) => x.api)), return_progress: true, cache_prompt: true, ...samplingParams(think) };
+    // Let the model make pictures itself when it knows how to use tools.
+    const toolOK = caps().tools && imagesReady() && S.settings.images.auto !== false && !opts.prefill;
+    if (toolOK) {
+      body.tools = [IMAGE_TOOL];
+      body.tool_choice = "auto";
+      body.parallel_tool_calls = false;
+    }
     if (caps().reasoning) {
       if (think) {
         body.chat_template_kwargs = { enable_thinking: true };
@@ -784,12 +938,18 @@ async function generate(chat, m, opts = {}) {
     });
     if (tThinkStart && !m.thinkMs) m.thinkMs = performance.now() - tThinkStart;
     m.finish = res.finishReason;
+    const call = res.toolCalls?.map(parseImageCall).find(Boolean);
     const t = res.timings;
     if (t) {
       m.stats = { tps: t.predicted_per_second, n: t.predicted_n, promptN: t.prompt_n, cached: t.cache_n, ttft: Math.round((tFirst || performance.now()) - t0) };
       if (t.predicted_n >= 16 && S.model?.entry?.path) api.learn(S.model.entry.path, t.predicted_per_second, t.predicted_n);
     }
     if (res.usage) chat.lastTokens = res.usage.total_tokens;
+    if (call && !controller.signal.aborted) {
+      m.finish = "stop";
+      if (S.chat === chat) rerender(m);
+      await generatePicture(chat, m, call, controller);
+    }
   } catch (e) {
     m.waiting = false;
     if (e.aborted || controller.signal.aborted || S.generating?.stopped) {
@@ -844,7 +1004,7 @@ async function maybeTitle(chat) {
     return;
   }
   const first = path.find((x) => x.role === "user");
-  const answer = path.find((x) => x.role === "assistant" && x.content);
+  const answer = path.find((x) => x.role === "assistant" && (x.content || x.image?.status === "done"));
   if (!first || !answer) return;
   chat.titled = true;
   chat.title ||= simpleTitle(first.content || first.attachments?.[0]?.name || "");

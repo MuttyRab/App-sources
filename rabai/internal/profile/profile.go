@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 
+	"rabai/internal/accel"
 	"rabai/internal/gguf"
 	"rabai/internal/hw"
 )
@@ -30,6 +31,7 @@ type Prefs struct {
 	Ctx     int    `json:"ctx"`     // 0 = automatic
 	Threads int    `json:"threads"` // 0 = automatic
 	KVCache string `json:"kvCache"` // "auto", "f16", "q8_0"
+	GPU     string `json:"gpu"`     // "auto" (default: use it when measured faster), "on", "off"
 }
 
 // Learned holds measurements from earlier runs of this model on this PC.
@@ -37,6 +39,8 @@ type Learned struct {
 	KVBytesPerToken float64 `json:"kvBytesPerToken"` // f16-equivalent, measured by the engine
 	TokensPerSec    float64 `json:"tokensPerSec"`    // median generation speed
 	BandwidthGBs    float64 `json:"bandwidthGBs"`    // machine-wide calibration
+	// Accel records whether this model runs better on the graphics card.
+	Accel *accel.Decision `json:"accel,omitempty"`
 }
 
 // Profile is the computed configuration plus what the UI shows about it.
@@ -61,6 +65,8 @@ type Profile struct {
 	Sampling        map[string]float64 `json:"sampling,omitempty"`
 	SamplingNoThink map[string]float64 `json:"samplingNoThink,omitempty"`
 	ModelTitles     bool               `json:"modelTitles"`
+	Accel           string             `json:"accel"`            // "cpu", "gpu", "gpu_safe" or "tune" (not yet measured)
+	Device          string             `json:"device,omitempty"` // the GPU it runs on
 	Notes           []string           `json:"notes,omitempty"`
 }
 

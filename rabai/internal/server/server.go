@@ -24,6 +24,8 @@ import (
 	"rabai/internal/engine"
 	"rabai/internal/gguf"
 	"rabai/internal/hw"
+	"rabai/internal/imagegen"
+	"rabai/internal/imagemodel"
 	"rabai/internal/models"
 	"rabai/internal/profile"
 	"rabai/internal/store"
@@ -54,6 +56,9 @@ type Config struct {
 	SystemDark func() bool
 	OllamaDir  string
 	EngineInfo string
+	NoGPU      bool // skip graphics card detection (tests)
+	ImageLib   *imagemodel.Library
+	Images     *imagegen.Manager // nil when this build has no image engine
 }
 
 // Server handles HTTP requests.
@@ -74,6 +79,13 @@ type Server struct {
 
 	infoMu    sync.Mutex
 	infoCache map[string]cachedInfo
+
+	imageState
+
+	gpuMu      sync.Mutex
+	gpu        gpuState
+	gpuReady   chan struct{}
+	tuneCancel context.CancelFunc
 }
 
 type cachedInfo struct {
@@ -112,12 +124,24 @@ type loadedModel struct {
 	Profile profile.Profile `json:"profile"`
 	Info    *gguf.Info      `json:"-"`
 	Prefs   profile.Prefs   `json:"prefs"`
+
+	attempts []attempt
 }
 
 // New builds the server. Call SetAddr once the listener is bound.
 func New(cfg Config) *Server {
-	s := &Server{cfg: cfg, eventSubs: map[chan []byte]struct{}{}}
+	s := &Server{cfg: cfg, eventSubs: map[chan []byte]struct{}{}, gpuReady: make(chan struct{})}
 	s.addr.Store("")
+	if s.cfg.ImageLib == nil {
+		s.cfg.ImageLib = imagemodel.Open(filepath.Join(cfg.Store.Root(), "image-models.json"))
+	}
+	s.cfg.ImageLib.ExtraParts = func() []string {
+		var out []string
+		for _, e := range cfg.Library.All() {
+			out = append(out, e.Path)
+		}
+		return out
+	}
 	s.proxy = &httputil.ReverseProxy{
 		Rewrite: func(r *httputil.ProxyRequest) {
 			base, _ := r.In.Context().Value(engineURLKey{}).(string)
@@ -140,6 +164,11 @@ func New(cfg Config) *Server {
 	}
 	cfg.Engine.OnReady = s.onEngineReady
 	go s.forwardEngineEvents()
+	if cfg.NoGPU {
+		s.setGPU(gpuState{Checked: true})
+	} else {
+		go s.detectGPUs()
+	}
 	return s
 }
 
@@ -182,6 +211,13 @@ func (s *Server) Handler() http.Handler {
 	api("POST /api/native/reveal", s.handleReveal)
 	api("POST /api/native/theme", s.handleTheme)
 	api("POST /api/native/save", s.handleSave)
+	api("POST /api/gpu/retest", s.handleRetestGPU)
+	api("GET /api/images", s.handleImages)
+	api("POST /api/images/action", s.imageAction)
+	api("POST /api/images/generate", s.handleGenerate)
+	api("POST /api/images/cancel", s.handleCancelImage)
+	api("GET /api/media/{id}", s.handleMedia)
+	api("POST /api/media", s.handleUploadMedia)
 
 	proxy := s.requireSession(http.HandlerFunc(s.handleProxy))
 	for _, p := range []string{"/v1/", "/props", "/tokenize", "/detokenize", "/apply-template", "/slots"} {
@@ -262,7 +298,7 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
-	w.Header().Set("Content-Security-Policy", "default-src 'self'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; font-src 'self' data:; media-src 'self' data: blob:; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'")
+	w.Header().Set("Content-Security-Policy", "default-src 'self'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; font-src 'self' data:; media-src 'self' data: blob:; connect-src 'self'; worker-src 'self' blob:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'")
 	w.Write(data)
 }
 
@@ -385,7 +421,16 @@ func (s *Server) profileFor(e *models.Entry, info *gguf.Info, prefs profile.Pref
 	if l.BandwidthGBs == 0 {
 		l.BandwidthGBs = s.cfg.Library.Bandwidth()
 	}
-	return profile.Compute(info, e.Size, e.MMProjSize, e.MMProj, s.currentHW(), prefs, l)
+	p := profile.Compute(info, e.Size, e.MMProjSize, e.MMProj, s.currentHW(), prefs, l)
+	if dec := l.Accel; dec != nil && prefs.GPU != "off" {
+		if g := s.gpuInfo(0); g.Best != nil && g.Best.Desc == dec.Device && dec.Mode != "cpu" && dec.GPU != nil && dec.GPU.GenTPS > 0 {
+			p.EstTPS = dec.GPU.GenTPS
+			p.Speed = profile.SpeedLabel(p.EstTPS)
+			p.Device = dec.Device
+		}
+		p.Accel = dec.Mode
+	}
+	return p
 }
 
 func (s *Server) currentHW() hw.Info {
@@ -410,6 +455,7 @@ func (s *Server) handleState(w http.ResponseWriter, r *http.Request) {
 		"engine":     s.cfg.Engine.State(),
 		"model":      loaded,
 		"hw":         s.currentHW(),
+		"gpu":        s.gpuInfo(0),
 	})
 }
 
@@ -419,6 +465,8 @@ type modelView struct {
 	Speed  string  `json:"speed"`
 	EstTPS float64 `json:"estTps"`
 	Ctx    int     `json:"ctx"`
+	Accel  string  `json:"accel,omitempty"`  // cpu, gpu, gpu_safe, or "" (not measured)
+	Device string  `json:"device,omitempty"` // GPU it runs on
 }
 
 func (s *Server) view(e models.Entry) modelView {
@@ -433,6 +481,9 @@ func (s *Server) view(e models.Entry) modelView {
 	}
 	p := s.profileFor(&e, info, s.currentPrefs())
 	v.Fit, v.Speed, v.EstTPS, v.Ctx = p.Fit, p.Speed, p.EstTPS, p.Ctx
+	if p.Accel != "tune" {
+		v.Accel, v.Device = p.Accel, p.Device
+	}
 	return v
 }
 
@@ -488,16 +539,30 @@ func (s *Server) handleAdd(w http.ResponseWriter, r *http.Request) {
 		Error string `json:"error"`
 	}
 	added := []modelView{}
+	addedImages := []imageView{}
 	failed := []failure{}
 	for _, p := range paths {
 		e, _, err := s.cfg.Library.Register(p)
-		if err != nil {
-			failed = append(failed, failure{Path: p, Error: err.Error()})
+		if err == nil {
+			added = append(added, s.view(*e))
 			continue
 		}
-		added = append(added, s.view(*e))
+		// Not a chat model: perhaps a picture model.
+		ie, ierr := s.cfg.ImageLib.Add(p)
+		if ierr == nil {
+			addedImages = append(addedImages, s.imageView(*ie))
+			continue
+		}
+		msg := err.Error()
+		if !strings.EqualFold(filepath.Ext(p), ".gguf") || strings.Contains(msg, "doesn't contain a chat model") {
+			msg = ierr.Error()
+		}
+		failed = append(failed, failure{Path: p, Error: msg})
 	}
-	writeJSON(w, map[string]any{"added": added, "failed": failed})
+	if len(addedImages) > 0 {
+		s.publish("images", nil)
+	}
+	writeJSON(w, map[string]any{"added": added, "addedImages": addedImages, "failed": failed})
 }
 
 func (s *Server) handleRemoveFolder(w http.ResponseWriter, r *http.Request) {
@@ -553,28 +618,25 @@ func (s *Server) handleLoad(w http.ResponseWriter, r *http.Request) {
 	if req.IdleUnloadMin != nil {
 		sleep = *req.IdleUnloadMin * 60
 	}
-	args := withSleep(p.Args(), sleep)
-	// If the first attempt fails, retry with safer settings: an
-	// uncompressed cache (some models can't use q8_0 with their attention
-	// layout), then a minimal context, then without the image add-on.
-	var fallbacks [][]string
-	safe := p
-	safe.CacheK, safe.CacheV = "f16", "f16"
-	if safe.Ctx > 4096 {
-		safe.Ctx = 4096
-	}
-	fallbacks = append(fallbacks, withSleep(safe.Args(), sleep))
-	if p.MMProj != "" {
-		noVision := safe
-		noVision.MMProj = ""
-		fallbacks = append(fallbacks, withSleep(noVision.Args(), sleep))
-	}
 	lm := &loadedModel{Entry: e, Profile: p, Info: info, Prefs: prefs}
 	s.mu.Lock()
 	s.loaded = nil
 	s.pending = lm
+	if s.tuneCancel != nil {
+		s.tuneCancel()
+		s.tuneCancel = nil
+	}
 	s.mu.Unlock()
-	s.cfg.Engine.Load(engine.LoadRequest{ModelPath: req.Path, Args: args, Fallbacks: fallbacks, Tag: lm})
+	// Attempts, in order: the chosen device; on the GPU, a safe mode without
+	// the features old drivers get wrong; the processor; then safer settings
+	// (an uncompressed cache, a small context, no image add-on).
+	mode, dev := s.accelFor(e, prefs)
+	if mode == "tune" {
+		lm.Profile.Accel = "tune"
+		go s.tune(e, lm, *dev, sleep)
+	} else {
+		s.startModel(e, lm, mode, dev, sleep)
+	}
 	writeJSON(w, lm)
 }
 
@@ -592,15 +654,26 @@ func (s *Server) onEngineReady(req engine.LoadRequest, st engine.State) {
 		return
 	}
 	// A fallback attempt may have changed the effective profile.
-	if st.Attempt > 0 {
-		lm.Profile.CacheK, lm.Profile.CacheV = "f16", "f16"
-		if lm.Profile.Ctx > 4096 {
-			lm.Profile.Ctx = 4096
+	if st.Attempt > 0 && st.Attempt < len(lm.attempts) {
+		a := lm.attempts[st.Attempt]
+		lm.Profile.Accel = a.mode
+		if a.mode == "cpu" {
+			lm.Profile.Device = ""
 		}
-		if st.Attempt > 1 {
+		if a.safeKV {
+			lm.Profile.CacheK, lm.Profile.CacheV = "f16", "f16"
+			if lm.Profile.Ctx > 4096 {
+				lm.Profile.Ctx = 4096
+			}
+		}
+		if a.noVision {
 			lm.Profile.MMProj, lm.Profile.Vision = "", false
 		}
-		lm.Profile.Notes = append(lm.Profile.Notes, "Loaded with safer settings after the first attempt failed.")
+		if lm.attempts[0].mode != "cpu" && a.mode == "cpu" {
+			lm.Profile.Notes = append(lm.Profile.Notes, "The graphics card couldn't load this model, so it runs on the processor.")
+		} else {
+			lm.Profile.Notes = append(lm.Profile.Notes, "Loaded with safer settings after the first attempt failed.")
+		}
 	}
 	if st.Memory != nil && st.Memory.NCtx > 0 {
 		lm.Profile.Ctx = st.Memory.NCtx
@@ -623,6 +696,10 @@ func (s *Server) onEngineReady(req engine.LoadRequest, st engine.State) {
 func (s *Server) handleUnload(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
 	s.loaded, s.pending = nil, nil
+	if s.tuneCancel != nil {
+		s.tuneCancel()
+		s.tuneCancel = nil
+	}
 	s.mu.Unlock()
 	s.cfg.Engine.Unload()
 	writeJSON(w, map[string]any{"ok": true})
@@ -704,6 +781,11 @@ func (s *Server) handleLearn(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, map[string]any{"ok": false})
 		return
 	}
+	if lm.Profile.Accel != "cpu" && lm.Profile.Accel != "" {
+		// GPU speeds say nothing about the processor's memory bandwidth.
+		writeJSON(w, map[string]any{"ok": true})
+		return
+	}
 	bw := profile.BandwidthFromRun(lm.Info, lm.Entry.Size, req.TPS)
 	s.cfg.Library.Learn(req.Path, func(l *profile.Learned) {
 		if l.TokensPerSec == 0 {
@@ -777,11 +859,38 @@ func (s *Server) handlePutChat(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleDeleteChat(w http.ResponseWriter, r *http.Request) {
-	if err := s.cfg.Store.Delete(r.PathValue("id")); err != nil {
+	id := r.PathValue("id")
+	var media []string
+	if c, err := s.cfg.Store.Get(id); err == nil {
+		media = mediaRefRe.FindAllString(string(c.Messages), -1)
+	}
+	if err := s.cfg.Store.Delete(id); err != nil {
 		jsonError(w, 400, err.Error())
 		return
 	}
+	s.deleteUnusedMedia(media)
 	writeJSON(w, map[string]any{"ok": true})
+}
+
+// deleteUnusedMedia removes media files no remaining chat refers to (a
+// branched chat shares its pictures with the original).
+func (s *Server) deleteUnusedMedia(ids []string) {
+	if len(ids) == 0 {
+		return
+	}
+	used := map[string]bool{}
+	for _, m := range s.cfg.Store.List() {
+		if c, err := s.cfg.Store.Get(m.ID); err == nil {
+			for _, x := range mediaRefRe.FindAllString(string(c.Messages), -1) {
+				used[x] = true
+			}
+		}
+	}
+	for _, x := range ids {
+		if !used[x] {
+			s.cfg.Store.DeleteMedia(x)
+		}
+	}
 }
 
 func (s *Server) handleDeleteAll(w http.ResponseWriter, r *http.Request) {
@@ -789,6 +898,7 @@ func (s *Server) handleDeleteAll(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, 500, err.Error())
 		return
 	}
+	os.RemoveAll(filepath.Join(s.cfg.Store.Root(), "media"))
 	writeJSON(w, map[string]any{"ok": true})
 }
 
@@ -848,12 +958,23 @@ func (s *Server) handleSave(w http.ResponseWriter, r *http.Request) {
 		Name    string `json:"name"`
 		Ext     string `json:"ext"`
 		Content string `json:"content"`
+		Media   string `json:"media"` // save a stored picture instead of text
 	}
 	if readJSON(r, &req) != nil {
 		jsonError(w, 400, "invalid request")
 		return
 	}
-	path, err := s.cfg.Native.SaveFile(req.Name, req.Ext, []byte(req.Content))
+	data := []byte(req.Content)
+	if req.Media != "" {
+		p := s.cfg.Store.MediaPath(req.Media)
+		b, err := os.ReadFile(p)
+		if p == "" || err != nil {
+			jsonError(w, 404, "picture not found")
+			return
+		}
+		data = b
+	}
+	path, err := s.cfg.Native.SaveFile(req.Name, req.Ext, data)
 	if err != nil {
 		jsonError(w, 500, err.Error())
 		return

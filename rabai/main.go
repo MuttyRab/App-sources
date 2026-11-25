@@ -21,6 +21,7 @@ import (
 
 	"rabai/internal/engine"
 	"rabai/internal/hw"
+	"rabai/internal/imagegen"
 	"rabai/internal/models"
 	"rabai/internal/server"
 	"rabai/internal/store"
@@ -57,6 +58,7 @@ func main() {
 		flagPort     = flag.Int("port", 0, "port for the local server (0 = any free port)")
 		flagData     = flag.String("data", "", "folder for chats and settings")
 		flagEngine   = flag.String("engine", "", "path to a llama-server executable to use instead of the built-in one")
+		flagSD       = flag.String("sd-engine", "", "path to a stable-diffusion.cpp sd-server executable to use instead of the built-in one")
 		flagWeb      = flag.String("web", "", "serve the UI from this folder (development)")
 		flagDebug    = flag.Bool("debug", false, "enable developer tools in the window")
 	)
@@ -91,6 +93,11 @@ func main() {
 	}
 	port := ln.Addr().(*net.TCPAddr).Port
 	eng := engine.New(exe, logsDir, port)
+	sdExe := resolveImageEngine(*flagSD, exe)
+	if sdExe == "" {
+		log.Printf("no image engine in this build")
+	}
+	images := imagegen.New(sdExe, logsDir)
 	native := winui.NewNative()
 
 	var webFS fs.FS = web.FS
@@ -102,6 +109,7 @@ func main() {
 		Store: st, Library: lib, Engine: eng, HW: h, Native: native, Web: webFS,
 		Token: token, Version: version, EngineInfo: engineVersion,
 		ScanDirs: defaultScanDirs, OllamaDir: ollamaDir(), SystemDark: winui.SystemDark,
+		Images: images,
 	})
 	srv.SetAddr(ln.Addr().String())
 	httpSrv := &http.Server{Handler: srv.Handler(), ReadHeaderTimeout: 15 * time.Second}
@@ -135,6 +143,7 @@ func main() {
 
 	log.Printf("shutting down")
 	eng.Shutdown()
+	images.Stop()
 	httpSrv.Close()
 }
 
@@ -199,6 +208,28 @@ func resolveEngine(override, localDir string) (string, error) {
 		return "", err
 	}
 	return filepath.Join(dir, exeName("llama-server")), nil
+}
+
+// resolveImageEngine finds sd-server: an explicit override, $RABAI_SD_ENGINE,
+// or the "sd" folder next to the chat engine (the embedded payload).
+func resolveImageEngine(override, chatExe string) string {
+	if override == "" {
+		override = os.Getenv("RABAI_SD_ENGINE")
+	}
+	if override != "" {
+		if st, err := os.Stat(override); err == nil && st.IsDir() {
+			override = filepath.Join(override, exeName("sd-server"))
+		}
+		if _, err := os.Stat(override); err == nil {
+			return override
+		}
+		return ""
+	}
+	p := filepath.Join(filepath.Dir(chatExe), "sd", exeName("sd-server"))
+	if _, err := os.Stat(p); err == nil {
+		return p
+	}
+	return ""
 }
 
 func exeName(n string) string {

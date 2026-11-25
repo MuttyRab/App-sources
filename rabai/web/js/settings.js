@@ -4,12 +4,14 @@ import { api } from "./api.js";
 import { h, formatBytes, formatCtx, mod } from "./util.js";
 import { icon } from "./icons.js";
 import { openModal, confirmDialog, toast } from "./ui.js";
-import { metaLine, modelLabel } from "./modelmenu.js";
+import { metaLine, modelLabel, gpuSummary } from "./modelmenu.js";
+import { refreshImages, setDefaultImage } from "./images.js";
 
 const TABS = [
   ["general", "General", "settings"],
   ["personalization", "Personalization", "user-round-pen"],
   ["model", "Model & performance", "gauge"],
+  ["pictures", "Pictures", "image"],
   ["speech", "Speech", "audio-lines"],
   ["data", "Data controls", "database"],
   ["about", "About", "info"],
@@ -182,6 +184,16 @@ const PANELS = {
       row("Context size", "How much of the conversation the model can see at once", select(ctxOpts, perf.ctx, (v) => (set((s) => (s.perf.ctx = Number(v))), markReload(panel)), "Context size")),
       row("CPU threads", hw.perfCores && hw.perfCores < hw.physical ? `Your CPU has ${hw.perfCores} performance and ${hw.physical - hw.perfCores} efficiency cores` : `Your CPU has ${hw.physical || "?"} cores`, select(threadOpts, perf.threads, (v) => (set((s) => (s.perf.threads = Number(v))), markReload(panel)), "CPU threads")),
       row("Compress conversation memory", "Halves the memory the context uses, with little effect on quality", select([["auto", "Automatic"], ["f16", "Off"], ["q8_0", "On"]], perf.kvCache, (v) => (set((s) => (s.perf.kvCache = v)), markReload(panel)), "Compress conversation memory")),
+      row(
+        "Graphics card",
+        gpuSummary(),
+        h(
+          "div",
+          { class: "row-controls" },
+          seg([["auto", "Automatic"], ["on", "Always"], ["off", "Never"]], perf.gpu || "auto", (v) => (set((s) => (s.perf.gpu = v)), markReload(panel)), "Graphics card"),
+          S.gpu?.best ? h("button", { type: "button", class: "btn btn-ghost sm", text: "Test again", "data-tip": "Measure every model on the graphics card again (for example after a driver update)", onclick: async () => { await api.retestGPU(); toast("Each model will be tested again the next time it's used."); markReload(panel); } }) : null,
+        ),
+      ),
       row("Free memory when idle", "Unloads the model after a quiet period; it reloads when you send a message", select([[0, "Never"], [5, "After 5 minutes"], [15, "After 15 minutes"], [30, "After 30 minutes"], [60, "After 1 hour"]], S.settings.idleUnloadMin, (v) => (set((s) => (s.idleUnloadMin = Number(v))), markReload(panel)), "Free memory when idle")),
       h(
         "div",
@@ -220,11 +232,37 @@ const PANELS = {
         h("dt", { text: "Cores" }), h("dd", { text: `${hw.physical || "?"} cores, ${hw.logical || "?"} threads${hw.perfCores && hw.perfCores < hw.physical ? ` (${hw.perfCores} performance)` : ""}` }),
         h("dt", { text: "Memory" }), h("dd", { text: `${formatBytes(hw.totalRam)} total, ${formatBytes(hw.availRam)} free` }),
         h("dt", { text: "Instruction sets" }), h("dd", { text: [hw.avx && "AVX", hw.avx2 && "AVX2", hw.fma && "FMA", hw.avx512 && "AVX-512"].filter(Boolean).join(", ") || "Basic (SSE)" }),
+        h("dt", { text: "Graphics card" }), h("dd", { text: S.gpu?.best ? `${S.gpu.best.desc}${S.gpu.best.totalMiB ? `, ${formatBytes(S.gpu.best.totalMiB * 1048576)}` : ""}${S.gpu.best.integrated ? " (built into the processor)" : ""}` : S.gpu?.checked ? "None usable" : "Checking…" }),
         h("dt", { text: "Engine" }), h("dd", { text: S.engineInfo || "llama.cpp" }),
-        prof.threads ? [h("dt", { text: "Current settings" }), h("dd", { text: `${prof.threads} threads, ${formatCtx(prof.ctx)} context, ${prof.cacheK === "q8_0" ? "compressed" : "full"} memory` })] : null,
+        prof.threads ? [h("dt", { text: "Current settings" }), h("dd", { text: `${prof.accel === "gpu" || prof.accel === "gpu_safe" ? "Graphics card" + (prof.accel === "gpu_safe" ? " (safe mode)" : "") + ", " : prof.accel === "cpu" ? "Processor, " : ""}${prof.threads} threads, ${formatCtx(prof.ctx)} context, ${prof.cacheK === "q8_0" ? "compressed" : "full"} memory` })] : null,
+        learned?.accel?.reason ? [h("dt", { text: "Graphics card test" }), h("dd", { text: learned.accel.reason })] : null,
         learned?.tokensPerSec ? [h("dt", { text: "Measured speed" }), h("dd", { text: `${learned.tokensPerSec.toFixed(1)} tokens/s with this model` })] : null,
         hw.onBattery ? [h("dt", { text: "Power" }), h("dd", { text: "On battery: plug in for full speed" })] : null,
       ),
+    );
+    return out;
+  },
+
+  pictures: (panel) => {
+    const out = [h("h3", { text: "Pictures" })];
+    const im = S.images || { models: [] };
+    if (!im.available) {
+      out.push(h("div", { class: "notice" }, h("span", { html: icon("info", 18) }), h("div", { text: "This version of RabAI has no image engine." })));
+      return out;
+    }
+    const ready = (im.models || []).filter((m) => !m.missingFile);
+    out.push(
+      row(
+        "Image model",
+        ready.length ? "Used when you ask for a picture" : "Add an image model (for example SD-Turbo, SDXL Turbo or FLUX) to make pictures",
+        ready.length
+          ? select(ready.map((m) => [m.path, m.name + (m.ready ? "" : " (needs files)")]), im.default, (v) => setDefaultImage(v).then(() => panel.replaceChildren(...PANELS.pictures(panel))), "Image model")
+          : h("button", { type: "button", class: "btn btn-secondary sm", text: "Add image model", onclick: () => actions.openModelsManager?.("images") }),
+      ),
+      row("Make pictures from chat", "When you ask for a picture (\u201cdraw a cat in space\u201d), RabAI makes it with the image model. Chat models that can use tools also decide by themselves", toggle(() => S.settings.images.auto !== false, (v) => set((s) => (s.images.auto = v)), "Make pictures from chat")),
+      row("Picture shape", "For new pictures, unless you ask for another", seg([["square", "Square"], ["portrait", "Portrait"], ["landscape", "Landscape"]], S.settings.images.size || "square", (v) => set((s) => (s.images.size = v)), "Picture shape")),
+      row("Speed on the processor", "Automatic uses a tiny decoder when pictures are made without a graphics card: about 3× faster, with nearly the same look", seg([["auto", "Automatic"], ["fast", "Fastest"], ["best", "Best quality"]], S.settings.images.quality || "auto", (v) => set((s) => (s.images.quality = v)), "Speed on the processor")),
+      h("div", { class: "row" }, h("div", { class: "row-text" }, h("div", { class: "row-title", text: "Image models" }), h("div", { class: "row-desc", text: "Add models, choose missing files, see how fast each one is" })), h("button", { type: "button", class: "btn btn-secondary sm", text: "Manage", onclick: () => actions.openModelsManager?.("images") })),
     );
     return out;
   },

@@ -48,11 +48,17 @@ export const api = {
   reveal: (path) => request("POST", "/api/native/reveal", { path }),
   theme: (dark, bg) => request("POST", "/api/native/theme", { dark, bg }).catch(() => {}),
   saveFile: (name, ext, content) => request("POST", "/api/native/save", { name, ext, content }),
+  saveMedia: (name, ext, media) => request("POST", "/api/native/save", { name, ext, media }),
   props: () => request("GET", "/props"),
   countTokens: (body) => request("POST", "/v1/chat/completions/input_tokens", body),
   complete: (body, signal) =>
     fetch("/v1/chat/completions", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body), signal }),
   control: (id, action) => request("POST", "/v1/chat/completions/control", { id, action }),
+  images: () => request("GET", "/api/images"),
+  retestGPU: () => request("POST", "/api/gpu/retest"),
+  imageAction: (action, path, extra = {}) => request("POST", "/api/images/action", { action, path, ...extra }),
+  generateImage: (req) => request("POST", "/api/images/generate", req),
+  cancelImage: (jobId) => request("POST", "/api/images/cancel", { jobId }).catch(() => {}),
 };
 
 /** Subscribes to backend events with automatic reconnection. */
@@ -103,7 +109,7 @@ export async function streamChat(body, signal, handlers) {
   const reader = res.body.getReader();
   const dec = new TextDecoder();
   let buf = "";
-  const result = { timings: null, usage: null, finishReason: null };
+  const result = { timings: null, usage: null, finishReason: null, toolCalls: [] };
   let gotId = false;
   for (;;) {
     const { value, done } = await reader.read();
@@ -136,6 +142,16 @@ export async function streamChat(body, signal, handlers) {
       if (ch) {
         const d = ch.delta || {};
         if (d.content || d.reasoning_content) handlers.onDelta?.({ content: d.content || "", reasoning: d.reasoning_content || "" });
+        for (const tc of d.tool_calls || []) {
+          // Tool calls arrive in pieces: an id and name first, then the
+          // arguments JSON a few characters at a time.
+          const i = tc.index ?? 0;
+          const cur = (result.toolCalls[i] ||= { id: "", name: "", arguments: "" });
+          if (tc.id) cur.id = tc.id;
+          if (tc.function?.name) cur.name += tc.function.name;
+          if (tc.function?.arguments) cur.arguments += tc.function.arguments;
+          handlers.onToolCall?.(cur);
+        }
         if (ch.finish_reason) result.finishReason = ch.finish_reason;
       }
       if (chunk.timings) result.timings = chunk.timings;

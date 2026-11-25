@@ -6,6 +6,7 @@ import { h, formatBytes, formatCtx, formatParams } from "./util.js";
 import { icon } from "./icons.js";
 import { openMenu, openModal, closeMenu, toast } from "./ui.js";
 import { LOGO } from "./sidebar.js";
+import { refreshImages, setDefaultImage } from "./images.js";
 
 const SPEED = { fast: "Fast", good: "Good speed", slow: "Slow", very_slow: "Very slow" };
 const FIT = { fits: "Fits in memory", tight: "Tight on memory", too_big: "Too big for this PC" };
@@ -49,8 +50,22 @@ function description(v) {
 
 function speedText(v) {
   if (v.missing) return "File not found";
-  if (v.fit === "too_big") return "Too big for this PC";
+  if (v.fit === "too_big" && !v.device) return "Too big for this PC";
+  if (v.device && v.speed) return `${SPEED[v.speed]} on the graphics card`;
   return v.speed ? `${SPEED[v.speed]} on this PC` : "";
+}
+
+/** "About 9 seconds per picture" for an image model. */
+function pictureSpeed(m) {
+  if (!m.estSecs) return "";
+  const s = Math.round(m.estSecs);
+  return s < 90 ? `about ${s}s per picture` : `about ${Math.round(s / 60)} min per picture`;
+}
+
+function imageDescription(m) {
+  if (m.missingFile) return "File not found";
+  if (!m.ready) return `${m.kind} · needs ${m.missing.map((x) => x.label).join(", ")}`;
+  return [m.kind, formatBytes(m.size), pictureSpeed(m), m.device ? "graphics card" : ""].filter(Boolean).join(" · ");
 }
 
 const byName = (a, b) => modelLabel(a).localeCompare(modelLabel(b), undefined, { numeric: true, sensitivity: "base" });
@@ -108,8 +123,37 @@ export async function openModelMenu(anchor, side = "bottom") {
         ),
       ),
     });
+  await refreshImages();
+  const imgs = (S.images?.models || []).filter((m) => !m.missingFile);
+  if (imgs.length) {
+    items.push({ heading: "Image model" });
+    items.push({
+      custom: h(
+        "div",
+        { class: "mm-list" },
+        imgs.map((m) =>
+          h(
+            "button",
+            {
+              type: "button",
+              class: "mm-row" + (m.path === S.images.default ? " current" : ""),
+              "aria-current": m.path === S.images.default ? "true" : null,
+              onclick: () => {
+                closeMenu();
+                if (!m.ready) return openModelsManager("images");
+                setDefaultImage(m.path).then(() => toast(`Pictures will be made with ${m.name}`));
+              },
+            },
+            h("span", { class: "mm-icon", html: icon("image", 18) }),
+            h("span", { class: "mm-body" }, h("div", { class: "mm-name", text: m.name }), h("div", { class: "mm-meta" + (m.ready ? "" : " warn"), text: imageDescription(m) })),
+            m.path === S.images.default ? h("span", { class: "mm-check", html: icon("check", 18) }) : null,
+          ),
+        ),
+      ),
+    });
+  }
   items.push({ divider: true });
-  items.push({ label: "Add models…", icon: "plus", hint: "Choose one or more .gguf files", onClick: () => addModels() });
+  items.push({ label: "Add models…", icon: "plus", hint: "Chat models (.gguf) or image models", onClick: () => addModels() });
   items.push({ label: "Find models on this PC", icon: "text-search", onClick: () => scan(true) });
   items.push({ label: "Manage models", icon: "sliders-horizontal", onClick: openModelsManager });
   if (curPath && S.engine.status !== "idle") items.push({ label: "Unload model", icon: "x", hint: "Frees the memory it uses", onClick: unload });
@@ -131,12 +175,22 @@ export async function addModels() {
     if (r?.cancelled) return [];
     await refreshModels();
     const added = r.added || [];
+    const addedImages = r.addedImages || [];
     const failed = r.failed || [];
     if (failed.length) {
       const name = failed[0].path.split(/[\\/]/).pop();
       toast(failed.length === 1 ? `${name}: ${failed[0].error}` : `${failed.length} files couldn't be added. ${name}: ${failed[0].error}`, { kind: "error", timeout: 9000 });
     }
     if (added.length) toast(added.length === 1 ? `Added ${modelLabel(added[0])}` : `Added ${added.length} models`);
+    if (addedImages.length) {
+      await refreshImages();
+      const needs = addedImages.find((m) => !m.ready);
+      if (needs) {
+        toast(`${needs.name} needs ${needs.missing.map((x) => x.label).join(", ")}. Put the files in the same folder, or choose them in Models.`, { timeout: 9000, action: { label: "Choose files", onClick: () => openModelsManager("images") } });
+      } else {
+        toast(addedImages.length === 1 ? `Added the image model ${addedImages[0].name}. Ask for a picture to try it.` : `Added ${addedImages.length} image models`);
+      }
+    }
     if (added.length && (!S.model || S.engine.status === "idle")) loadModel(added[0].path);
     emit("models");
     return added;
@@ -146,14 +200,136 @@ export async function addModels() {
   }
 }
 
+const SLOT_ORDER = ["model", "diffusion_model", "clip_l", "clip_g", "t5xxl", "llm", "llm_vision", "vae", "tae", "tokenizer", "embeddings_connectors", "uncond_diffusion_model", "control_net"];
+const SLOT_NAMES = { model: "Model", diffusion_model: "Diffusion model", clip_l: "CLIP-L text encoder", clip_g: "CLIP-G text encoder", t5xxl: "T5-XXL text encoder", llm: "Text encoder", llm_vision: "Vision projector", vae: "VAE", tae: "Tiny VAE", tokenizer: "Tokenizer", embeddings_connectors: "Text connector", uncond_diffusion_model: "Unconditional model", control_net: "ControlNet" };
+const fileName = (p) => p.split(/[\\/]/).pop();
+
+/** GPU summary for the Models window and settings. */
+export function gpuSummary() {
+  const g = S.gpu;
+  if (!g?.checked) return "Checking for a graphics card…";
+  if (!g.best) return "No usable graphics card found, so models run on the processor. RabAI is tuned for that.";
+  const mode = S.settings.perf.gpu || "auto";
+  if (mode === "off") return `${g.best.desc} found, but the graphics card is turned off in Settings.`;
+  return `${g.best.desc}${g.best.totalMiB ? ` (${(g.best.totalMiB / 1024).toFixed(g.best.totalMiB < 10240 ? 1 : 0)} GB)` : ""}: each model is tested once and uses it only if it's faster and gives correct results.`;
+}
+
+function imageModelsPane(body, repaint) {
+  const im = S.images || { models: [] };
+  const list = im.models || [];
+  const head = h(
+    "div",
+    { class: "mgr-actions" },
+    h("button", { type: "button", class: "btn btn-primary sm", onclick: () => addModels().then(repaint) }, h("span", { html: icon("plus", 16) }), "Add image models"),
+  );
+  if (!im.available) return [h("p", { class: "row-desc", text: "This version of RabAI has no image engine." })];
+  const rows = list.length
+    ? h(
+        "div",
+        { class: "mgr-list" },
+        list.map((m) => {
+          const isDefault = m.path === im.default;
+          const parts = SLOT_ORDER.filter((s) => m.parts?.[s]).map((s) => [s, m.parts[s]]);
+          const missing = m.missing || [];
+          return h(
+            "div",
+            { class: "mgr-row img-row" + (m.missingFile ? " missing" : "") },
+            h("div", { class: "mm-icon lg", html: icon("image", 20) }),
+            h(
+              "div",
+              { class: "mgr-body" },
+              h("div", { class: "mm-name", text: m.name }),
+              h("div", { class: "mm-meta", text: m.missingFile ? "File not found" : [m.kind, formatBytes(m.size), pictureSpeed(m)].filter(Boolean).join(" · ") }),
+              missing.length
+                ? h(
+                    "div",
+                    { class: "img-missing" },
+                    missing.map((x) =>
+                      h(
+                        "div",
+                        { class: "img-need" },
+                        h("span", { html: icon("triangle-alert", 16) }),
+                        h("span", { text: `Needs ${x.label}` }),
+                        h("button", { type: "button", class: "btn btn-secondary xs", text: "Choose file…", onclick: () => pickPart(m, x.slot).then(repaint) }),
+                      ),
+                    ),
+                    h("button", { type: "button", class: "link-btn", text: "Look again in the model's folder", onclick: () => api.imageAction("refresh", m.path).then(repaint) }),
+                  )
+                : null,
+              parts.length > 1
+                ? h(
+                    "details",
+                    { class: "img-parts" },
+                    h("summary", { text: `${parts.length} files` }),
+                    parts.map(([slot, file]) =>
+                      h(
+                        "div",
+                        { class: "img-part" },
+                        h("span", { class: "k", text: SLOT_NAMES[slot] || slot }),
+                        h("span", { class: "v", text: fileName(file), title: file }),
+                        slot !== "model" && slot !== "diffusion_model" ? h("button", { type: "button", class: "link-btn", text: "Change", onclick: () => pickPart(m, slot).then(repaint) }) : null,
+                      ),
+                    ),
+                  )
+                : null,
+              m.learned?.reason ? h("div", { class: "mgr-path", text: m.learned.reason }) : null,
+            ),
+            h(
+              "div",
+              { class: "mgr-buttons" },
+              isDefault
+                ? h("span", { class: "badge", text: "Default" })
+                : h("button", { type: "button", class: "btn btn-secondary sm", text: "Use", disabled: !m.ready, "data-tip": m.ready ? "Use for pictures" : "Add the missing files first", onclick: () => setDefaultImage(m.path).then(repaint) }),
+              h("button", { type: "button", class: "icon-btn sm", "aria-label": `Show ${m.name} in File Explorer`, "data-tip": "Show in folder", disabled: m.missingFile, html: icon("folder-open", 18), onclick: () => api.reveal(m.path).catch((e) => toast(e.message)) }),
+              h("button", { type: "button", class: "icon-btn sm", "aria-label": `Remove ${m.name} from the list`, "data-tip": "Remove from list (keeps the files)", html: icon("x", 18), onclick: async () => { await api.imageAction("remove", m.path); await refreshImages(); repaint(); } }),
+            ),
+          );
+        }),
+      )
+    : h(
+        "div",
+        { class: "img-empty" },
+        h("p", { class: "row-desc", text: "No image models yet. Add a Stable Diffusion, SDXL, FLUX, Z-Image, Qwen Image or similar model file (.gguf or .safetensors). RabAI finds the text encoders and VAE it needs in the same or nearby folders." }),
+        h("p", { class: "row-desc", text: "For older laptops, a small fast model such as SD-Turbo (about 2 GB) makes a picture in seconds to a minute." }),
+      );
+  return [head, rows];
+}
+
+async function pickPart(m, slot) {
+  try {
+    const r = await api.imageAction("part", m.path, { slot, pick: true });
+    if (r?.cancelled) return;
+    await refreshImages();
+    if (r && !r.ready) toast(`Still needed: ${r.missing.map((x) => x.label).join(", ")}`);
+    else toast(`${m.name} is ready to make pictures`);
+  } catch (e) {
+    toast(e.message, { kind: "error" });
+  }
+}
+
 /** The "Models" window: every model RabAI knows, plus the folders it watches. */
-export function openModelsManager() {
+export function openModelsManager(tab = "chat") {
   closeMenu();
+  let current = tab === "images" ? "images" : "chat";
   openModal({
     title: "Models",
     className: "models-modal",
     content: (body) => {
+      const tabs = () =>
+        h(
+          "div",
+          { class: "seg mgr-tabs", role: "tablist", "aria-label": "Model kinds" },
+          [["chat", "Chat models"], ["images", "Image models"]].map(([id, label]) =>
+            h("button", { type: "button", role: "tab", class: "seg-btn" + (current === id ? " on" : ""), "aria-selected": String(current === id), text: label, onclick: () => ((current = id), paint()) }),
+          ),
+        );
+      const gpuLine = () => h("div", { class: "gpu-line" }, h("span", { html: icon("cpu", 16) }), h("span", { text: gpuSummary() }));
       const paint = async () => {
+        if (current === "images") {
+          await refreshImages();
+          body.replaceChildren(tabs(), gpuLine(), ...imageModelsPane(body, paint));
+          return;
+        }
         await refreshModels();
         const curPath = S.model?.entry?.path;
         const list = [...S.models].sort(byName);
@@ -196,6 +372,8 @@ export function openModelsManager() {
           : h("p", { class: "row-desc", text: "No models yet. Add your GGUF files, or let RabAI look for them." });
         const folders = S.modelFolders || [];
         body.replaceChildren(
+          tabs(),
+          gpuLine(),
           actionsRow,
           rows,
           h("h3", { class: "mgr-sub", text: "Folders" }),
@@ -292,7 +470,7 @@ function loadingCard() {
   const e = S.model?.entry || {};
   const p = S.model?.profile || {};
   const pct = Math.round((S.engine.progress || 0) * 100);
-  const stage = S.engine.stage === "mmproj_model" ? "Loading the image add-on…" : pct > 0 ? "Loading into memory…" : "Starting the engine…";
+  const stage = S.engine.stage === "mmproj_model" ? "Loading the image add-on…" : /^(Testing|Paused)/.test(S.engine.stage || "") ? S.engine.stage + "…" : pct > 0 ? "Loading into memory…" : "Starting the engine…";
   const notes = (p.notes || []).slice(0, 3);
   return h(
     "div",
@@ -328,7 +506,7 @@ function welcome() {
   wrap.append(
     h("div", { class: "big-logo", html: LOGO }),
     h("h1", { text: known.length ? "Choose a model to start" : "Welcome to RabAI" }),
-    h("p", { text: known.length ? "Pick one of your models below. It runs entirely on this PC, so your chats stay private." : "Chat with AI models that run entirely on this PC. Choose a GGUF model file you've downloaded to begin." }),
+    h("p", { text: known.length ? "Pick one of your models below. It runs entirely on this PC, so your chats stay private." : "Chat with AI models and make pictures, all on this PC. Choose a GGUF chat model or an image model you've downloaded to begin." }),
     h(
       "div",
       { class: "actions" },

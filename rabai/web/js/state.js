@@ -17,7 +17,8 @@ export const DEFAULT_SETTINGS = {
   systemPrompt: "",
   sampling: { temperature: null, top_p: null, top_k: null, min_p: null, repeat_penalty: null, max_tokens: null },
   thinking: { enabled: true, effort: "", budget: 0 },
-  perf: { preset: "balanced", ctx: 0, threads: 0, kvCache: "auto" },
+  perf: { preset: "balanced", ctx: 0, threads: 0, kvCache: "auto", gpu: "auto" },
+  images: { auto: true, size: "square", quality: "auto" },
   idleUnloadMin: 0,
   voice: { name: "", rate: 1 },
   sidebarCollapsed: false,
@@ -61,6 +62,8 @@ export const S = {
   engineInfo: "",
   generating: null, // { chatId, msgId, controller, completionId }
   models: [],
+  images: { available: false, models: [], default: "" }, // image models
+  gpu: null, // graphics cards the engines can use
 };
 
 const listeners = new Map();
@@ -159,7 +162,9 @@ export function caps() {
   const vision = !!(S.props?.modalities?.vision ?? prof.vision);
   const effortLevels = Array.isArray(tc.reasoning_effort_levels) ? tc.reasoning_effort_levels : [];
   const nCtx = S.props?.default_generation_settings?.n_ctx || prof.ctx || 4096;
-  return { reasoning, vision, effortLevels, nCtx };
+  const audio = !!S.props?.modalities?.audio;
+  const tools = !!(tc.supports_tools && tc.supports_tool_calls !== false);
+  return { reasoning, vision, audio, tools, effortLevels, nCtx };
 }
 
 /** Cross-module commands, filled in by app.js (avoids import cycles). */
