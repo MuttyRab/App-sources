@@ -180,9 +180,10 @@ export function openModal({ title, content, className = "", onClose, label }) {
     onClose?.();
     prevFocus?.focus?.({ preventScroll: true });
   }
+  dialog.tabIndex = -1;
   requestAnimationFrame(() => {
-    const f = dialog.querySelector("[autofocus], input, textarea, select, .modal-body button") || dialog.querySelector("button");
-    f?.focus({ preventScroll: true });
+    const f = dialog.querySelector("[autofocus]") || dialog;
+    f.focus({ preventScroll: true });
   });
   return { el: dialog, body, close };
 }
@@ -236,7 +237,7 @@ export function promptDialog({ title, label, value = "", confirmLabel = "Save" }
         };
         input.addEventListener("keydown", (e) => e.key === "Enter" && submit());
         body.append(
-          label ? h("label", { class: "field-label", text: label }) : null,
+          ...(label ? [h("label", { class: "field-label", text: label })] : []),
           input,
           h(
             "div",
@@ -283,7 +284,7 @@ function showTip(target) {
   const text = target.dataset.tip;
   if (!text) return;
   tipEl ||= h("div", { class: "tooltip", role: "tooltip" });
-  tipEl.replaceChildren(h("span", { text }), target.dataset.tipKbd ? h("kbd", { text: target.dataset.tipKbd }) : null);
+  tipEl.replaceChildren(...[h("span", { text }), target.dataset.tipKbd ? h("kbd", { text: target.dataset.tipKbd }) : null].filter(Boolean));
   document.body.append(tipEl);
   const r = target.getBoundingClientRect();
   const m = tipEl.getBoundingClientRect();

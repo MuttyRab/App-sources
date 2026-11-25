@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -14,7 +15,7 @@ func TestStore_PutGetListSearchDelete(t *testing.T) {
 		t.Fatal(err)
 	}
 	c := &Chat{ID: "abc", Title: "Trip plans", Created: 1, Updated: 2,
-		Messages: json.RawMessage(`{"m1":{"role":"user","content":"Plan a weekend in Lisbon"}}`)}
+		Messages: json.RawMessage(`{"m1":{"role":"user","content":"Plan a **weekend** in Lisbon"}}`)}
 	if err := s.Put(c); err != nil {
 		t.Fatal(err)
 	}
@@ -28,7 +29,7 @@ func TestStore_PutGetListSearchDelete(t *testing.T) {
 		t.Fatalf("get: %v %+v", err, got)
 	}
 	hits := s.Search("lisbon weekend", 10)
-	if len(hits) != 1 || hits[0].ID != "abc" || hits[0].Snippet == "" {
+	if len(hits) != 1 || hits[0].ID != "abc" || !strings.Contains(hits[0].Snippet, "Plan a weekend in Lisbon") || strings.Contains(hits[0].Snippet, "Trip plans") {
 		t.Fatalf("search = %+v", hits)
 	}
 	// Reopen: the index is rebuilt from disk.

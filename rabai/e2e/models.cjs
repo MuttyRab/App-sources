@@ -42,8 +42,9 @@ const check = (name, ok, detail = "") => {
   await page.waitForSelector(".center-card", { timeout: 30000 });
   // Add several models in one go (the file dialog is stubbed by RABAI_PICK).
   await page.getByRole("button", { name: "Add model files" }).click();
-  await page.waitForSelector(".hero-title", { timeout: 120000 });
+  await page.waitForSelector(".toast", { timeout: 30000 });
   const toasts = await page.locator(".toast").allTextContents();
+  await page.waitForSelector(".hero-title", { timeout: 120000 });
   check("adding several files adds them all", toasts.some((t) => /Added 3 models/.test(t)), toasts.join(" | "));
   check("the first added model loads automatically", /Qwen3/i.test(await header()), await header());
 

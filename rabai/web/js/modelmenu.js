@@ -371,6 +371,8 @@ export function modelSwitch() {
 
 export function statusPill() {
   const st = S.engine;
+  // In an empty chat the loading card already shows progress.
+  if (!actions.hasMessages?.() && (st.status === "loading" || st.status === "error")) return null;
   if (st.status === "loading") {
     const pct = Math.round((st.progress || 0) * 100);
     return h("span", { class: "status-pill", role: "status" }, h("span", { text: "Loading" }), h("span", { class: "bar" }, h("i", { style: `width:${Math.max(pct, 4)}%` })), h("span", { text: pct ? pct + "%" : "" }));

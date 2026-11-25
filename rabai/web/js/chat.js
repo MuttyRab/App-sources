@@ -392,6 +392,18 @@ function readAloud(m, btn) {
 let stick = true;
 export function initScroll() {
   const c = $("#content");
+  // When the message box grows (attachments, long drafts) keep the newest
+  // message in view instead of letting the box cover it.
+  if (window.ResizeObserver) {
+    let last = 0;
+    new ResizeObserver(() => {
+      const h = $("#dock")?.offsetHeight || 0;
+      if (h !== last) {
+        last = h;
+        if (stick) c.scrollTop = c.scrollHeight;
+      }
+    }).observe($("#dock"));
+  }
   c.addEventListener("scroll", () => {
     stick = c.scrollHeight - c.scrollTop - c.clientHeight < 80;
     emit("scroll", stick);

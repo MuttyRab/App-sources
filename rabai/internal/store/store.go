@@ -51,7 +51,8 @@ type SearchHit struct {
 
 type entry struct {
 	meta ChatMeta
-	text string // lower-cased plain text for search
+	text string // lower-cased title and messages, for matching
+	body string // messages in their original case, for snippets
 }
 
 // Store is safe for concurrent use.
@@ -62,6 +63,9 @@ type Store struct {
 }
 
 var idRe = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
+
+// mdMarks matches Markdown syntax that shouldn't show in search snippets.
+var mdMarks = regexp.MustCompile("(\\*\\*|__|`+|^#+ |(?m)^#+\\s|(?m)^>\\s?|\\$\\$)")
 
 // ValidID reports whether id is safe to use as a file name.
 func ValidID(id string) bool { return idRe.MatchString(id) }
@@ -84,7 +88,7 @@ func Open(root string) (*Store, error) {
 			os.Rename(f, f+".bad")
 			continue
 		}
-		s.chats[c.ID] = &entry{meta: metaOf(&c), text: searchText(&c)}
+		s.chats[c.ID] = newEntry(&c)
 	}
 	// Leftover temp files from an interrupted write are garbage.
 	tmps, _ := filepath.Glob(filepath.Join(root, "chats", "*.tmp"))
@@ -98,20 +102,34 @@ func metaOf(c *Chat) ChatMeta {
 	return ChatMeta{ID: c.ID, Title: c.Title, Created: c.Created, Updated: c.Updated, Pinned: c.Pinned, Archived: c.Archived, ModelName: c.ModelName}
 }
 
-// searchText extracts message contents from the UI's message tree.
-func searchText(c *Chat) string {
+// newEntry indexes a chat for the sidebar and for search.
+func newEntry(c *Chat) *entry {
 	var b strings.Builder
-	b.WriteString(strings.ToLower(c.Title))
 	var msgs map[string]struct {
 		Content string `json:"content"`
+		Created int64  `json:"created"`
 	}
 	if json.Unmarshal(c.Messages, &msgs) == nil {
-		for _, m := range msgs {
-			b.WriteByte('\n')
-			b.WriteString(strings.ToLower(m.Content))
+		type m struct {
+			text    string
+			created int64
+		}
+		list := make([]m, 0, len(msgs))
+		for _, x := range msgs {
+			if x.Content != "" {
+				list = append(list, m{x.Content, x.Created})
+			}
+		}
+		sort.Slice(list, func(i, j int) bool { return list[i].created < list[j].created })
+		for i, x := range list {
+			if i > 0 {
+				b.WriteByte('\n')
+			}
+			b.WriteString(x.text)
 		}
 	}
-	return b.String()
+	body := b.String()
+	return &entry{meta: metaOf(c), text: strings.ToLower(c.Title + "\n" + body), body: body}
 }
 
 func (s *Store) chatPath(id string) string { return filepath.Join(s.root, "chats", id+".json") }
@@ -160,7 +178,7 @@ func (s *Store) Put(c *Chat) error {
 		return err
 	}
 	s.mu.Lock()
-	s.chats[c.ID] = &entry{meta: metaOf(c), text: searchText(c)}
+	s.chats[c.ID] = newEntry(c)
 	s.mu.Unlock()
 	return nil
 }
@@ -214,7 +232,7 @@ func (s *Store) Search(q string, limit int) []SearchHit {
 			}
 		}
 		if ok {
-			hits = append(hits, SearchHit{ChatMeta: e.meta, Snippet: snippet(e.text, words[0])})
+			hits = append(hits, SearchHit{ChatMeta: e.meta, Snippet: snippet(e.body, words[0])})
 		}
 	}
 	sort.Slice(hits, func(i, j int) bool { return hits[i].Updated > hits[j].Updated })
@@ -224,20 +242,14 @@ func (s *Store) Search(q string, limit int) []SearchHit {
 	return hits
 }
 
+// snippet returns the text around the first case-insensitive match of word
+// in the messages, keeping their original capitalization.
 func snippet(text, word string) string {
-	// Prefer a match in the messages over one in the title (the first line).
-	i := -1
-	if nl := strings.IndexByte(text, '\n'); nl >= 0 {
-		if j := strings.Index(text[nl+1:], word); j >= 0 {
-			i = nl + 1 + j
-		}
-	}
-	if i < 0 {
-		i = strings.Index(text, word)
-	}
-	if i < 0 {
+	loc := regexp.MustCompile("(?i)" + regexp.QuoteMeta(word)).FindStringIndex(text)
+	if loc == nil {
 		return ""
 	}
+	i := loc[0]
 	start := max(0, i-40)
 	end := min(len(text), i+len(word)+80)
 	for start > 0 && !utf8.RuneStart(text[start]) {
@@ -246,7 +258,7 @@ func snippet(text, word string) string {
 	for end < len(text) && !utf8.RuneStart(text[end]) {
 		end++
 	}
-	s := strings.Join(strings.Fields(text[start:end]), " ")
+	s := strings.Join(strings.Fields(mdMarks.ReplaceAllString(text[start:end], "")), " ")
 	if start > 0 {
 		s = "…" + s
 	}

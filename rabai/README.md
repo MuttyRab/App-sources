@@ -118,7 +118,9 @@ go test ./internal/...       # unit tests
 ```
 
 The end-to-end tests in `e2e/` drive the UI with Playwright against a running instance
-(`--no-window` prints its URL).
+(`--no-window` prints its URL). `e2e/visual.cjs` screenshots every screen in light and
+dark mode at several window sizes and reports anything overlapping, clipped or spilling
+out of the window.
 
 ## License and credits
 

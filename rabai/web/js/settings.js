@@ -255,7 +255,7 @@ const PANELS = {
       h("div", { class: "notice" }, h("span", { html: icon("hard-drive", 18) }), h("div", { text: "Your chats, settings and models never leave this PC. RabAI makes no internet connections." })),
       row("Archived chats", archived.length ? `${archived.length} archived` : "None yet", h("button", { type: "button", class: "btn btn-secondary sm", text: "Manage", onclick: () => openArchived() })),
       row("Export all chats", "Saves every chat to one JSON file", h("button", { type: "button", class: "btn btn-secondary sm", text: "Export", onclick: exportAll })),
-      row("Import chats", "From a RabAI export file", h("button", { type: "button", class: "btn btn-secondary sm", text: "Import", onclick: () => importInput.click() }), importInput),
+      row("Import chats", "From a RabAI export file", h("span", {}, h("button", { type: "button", class: "btn btn-secondary sm", text: "Import", onclick: () => importInput.click() }), importInput)),
       row("Open logs folder", "Engine and app logs, useful when something goes wrong", h("button", { type: "button", class: "btn btn-secondary sm", text: "Open", onclick: () => api.reveal("logs").catch((e) => toast(e.message)) })),
       row("Delete all chats", null, h("button", {
         type: "button",
