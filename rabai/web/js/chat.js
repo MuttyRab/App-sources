@@ -496,6 +496,20 @@ export function thinkingEnabled() {
   return caps().reasoning && S.settings.thinking.enabled;
 }
 
+/**
+ * Request fields that keep a thinking model from thinking. Some chat
+ * templates (K2-Horizon, gpt-oss) can't switch thinking off and only know
+ * effort levels such as low/medium/high. Asking those for "none" is ignored:
+ * the model thinks anyway and its reasoning, with a raw closing think tag,
+ * spills into the answer. For them, ask for the lightest level they support.
+ */
+export function thinkOffParams() {
+  const levels = caps().effortLevels;
+  if (!levels.length || levels.includes("none")) return { chat_template_kwargs: { enable_thinking: false }, reasoning_effort: "none" };
+  const lightest = ["minimal", "low", "medium", "high"].find((l) => levels.includes(l)) || levels[0];
+  return { reasoning_effort: lightest };
+}
+
 function engineReady() {
   return S.engine.status === "ready";
 }
@@ -739,8 +753,7 @@ async function generate(chat, m, opts = {}) {
         if (S.settings.thinking.effort && caps().effortLevels.includes(S.settings.thinking.effort)) body.reasoning_effort = S.settings.thinking.effort;
         if (S.settings.thinking.budget > 0) body.thinking_budget_tokens = S.settings.thinking.budget;
       } else {
-        body.chat_template_kwargs = { enable_thinking: false };
-        body.reasoning_effort = "none";
+        Object.assign(body, thinkOffParams());
       }
     }
     const res = await streamChat(body, controller.signal, {
@@ -850,10 +863,7 @@ async function maybeTitle(chat) {
       stream: false,
       cache_prompt: false,
     };
-    if (caps().reasoning) {
-      body.chat_template_kwargs = { enable_thinking: false };
-      body.reasoning_effort = "none";
-    }
+    if (caps().reasoning) Object.assign(body, thinkOffParams());
     const res = await fetch("/v1/chat/completions", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
     if (!res.ok) return;
     const j = await res.json();

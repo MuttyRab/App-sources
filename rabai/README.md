@@ -120,7 +120,8 @@ go test ./internal/...       # unit tests
 The end-to-end tests in `e2e/` drive the UI with Playwright against a running instance
 (`--no-window` prints its URL). `e2e/visual.cjs` screenshots every screen in light and
 dark mode at several window sizes and reports anything overlapping, clipped or spilling
-out of the window.
+out of the window. `e2e/thinking.cjs` checks a thinking model with Think on and off:
+no reasoning or raw think tags in the answer, and only effort levels the model knows.
 
 ## License and credits
 
