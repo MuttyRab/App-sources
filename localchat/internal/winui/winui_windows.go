@@ -90,6 +90,9 @@ func (n *Native) onUIThread(f func()) {
 
 // PickModelFile shows the Windows "Open" dialog filtered to GGUF files.
 func (n *Native) PickModelFile() (string, error) {
+	if p := os.Getenv("LOCALCHAT_PICK"); p != "" { // automated testing
+		return p, nil
+	}
 	var path string
 	var err error
 	n.onUIThread(func() {
