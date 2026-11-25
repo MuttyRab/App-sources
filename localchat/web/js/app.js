@@ -28,9 +28,23 @@ Object.assign(actions, {
   },
   async openChat(id) {
     if (S.chat?.id === id) return;
+    if (S.generating?.chatId === id && S.generating.chat) {
+      S.chat = S.generating.chat;
+      S.temporary = !!S.chat.temporary;
+      resetThreadDom();
+      renderAll();
+      scrollToBottom(true);
+      return;
+    }
     try {
       const c = await api.chat(id);
       if (!c.messages?.root) c.messages = { root: { id: "root", children: [], sel: null }, ...(c.messages || {}) };
+      for (const m of Object.values(c.messages)) {
+        if (m.status === "streaming") {
+          m.status = "done";
+          m.stopped = true;
+        }
+      }
       S.chat = c;
       S.temporary = false;
       resetThreadDom();
@@ -291,7 +305,7 @@ function installGlobalHandlers() {
       focusComposer();
     } else if (k === "escape" && S.generating && !document.querySelector(".overlay, .menu")) {
       stop();
-    } else if (!ctrl && !e.altKey && k.length === 1 && !e.target.closest("input, textarea, select, [contenteditable]") && !document.querySelector(".overlay")) {
+    } else if (!ctrl && !e.altKey && k.length === 1 && k !== " " && !e.target.closest("input, textarea, select, button, a, [role], [contenteditable]") && !document.querySelector(".overlay, .menu")) {
       focusComposer(); // type anywhere to start writing
     }
   });

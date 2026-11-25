@@ -161,6 +161,31 @@ const check = (name, ok, detail = "") => {
   check("theme setting persists", (await page.evaluate(() => document.documentElement.dataset.theme)) === "dark");
   await shot("f03-dark-after-reload");
 
+  // Switching away from a chat while it replies, then back, keeps the live reply.
+  await page.keyboard.press("Control+Shift+o");
+  await send("Say hi.");
+  await waitDone();
+  await page.keyboard.press("Control+Shift+o");
+  await send("Write a long poem about the sea, at least forty lines.");
+  await page.waitForFunction(() => (document.querySelector(".turn.assistant.latest .markdown")?.textContent || "").length > 10, null, { timeout: 60000 });
+  await page.locator(".chat-item:not(.active) .chat-link").first().click();
+  await page.waitForTimeout(600);
+  await page.locator(".chat-link:has(.live-dot)").click();
+  await page.waitForTimeout(400);
+  const liveText = await page.locator(".turn.assistant.latest .markdown").textContent();
+  check("reopening a chat mid-reply shows the live reply", liveText.length > 10, liveText.length + " chars");
+  await waitDone();
+  check("the reply finishes after switching back", (await page.locator(".turn.assistant.latest .notice.error").count()) === 0);
+
+  // Space activates a focused sidebar chat (keyboard users).
+  const target = page.locator(".chat-item:not(.active) .chat-link").first();
+  const targetTitle = await target.textContent();
+  await target.focus();
+  await page.keyboard.press("Space");
+  await page.waitForTimeout(600);
+  const currentTitle = await page.locator('.chat-link[aria-current="page"]').textContent().catch(() => "");
+  check("Space opens a focused chat", currentTitle === targetTitle, `${targetTitle} -> ${currentTitle}`);
+
   check("no unexpected page errors", errors.length === 0, errors.join(" | "));
   await browser.close();
   const failed = results.filter((r) => !r.ok).length;

@@ -121,7 +121,7 @@ function openPlusMenu(e) {
 
 function onKey(e) {
   if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
-    const sendKey = S.settings.sendOnEnter ? !e.ctrlKey : e.ctrlKey || e.metaKey;
+    const sendKey = S.settings.sendOnEnter || e.ctrlKey || e.metaKey;
     if (sendKey) {
       e.preventDefault();
       if (!S.generating) submit();

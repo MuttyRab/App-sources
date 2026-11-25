@@ -3,6 +3,7 @@
 package server
 
 import (
+	"context"
 	"crypto/subtle"
 	"encoding/json"
 	"fmt"
@@ -118,7 +119,8 @@ func New(cfg Config) *Server {
 	s.addr.Store("")
 	s.proxy = &httputil.ReverseProxy{
 		Rewrite: func(r *httputil.ProxyRequest) {
-			target, _ := url.Parse(cfg.Engine.BaseURL())
+			base, _ := r.In.Context().Value(engineURLKey{}).(string)
+			target, _ := url.Parse(base)
 			r.SetURL(target)
 			r.Out.Host = target.Host
 			// The engine refuses browser-originated requests when it runs as a
@@ -811,11 +813,14 @@ func (s *Server) handleSave(w http.ResponseWriter, r *http.Request) {
 
 // ---------- engine proxy ----------
 
+type engineURLKey struct{}
+
 func (s *Server) handleProxy(w http.ResponseWriter, r *http.Request) {
-	if s.cfg.Engine.BaseURL() == "" {
+	base := s.cfg.Engine.BaseURL()
+	if base == "" {
 		jsonError(w, http.StatusServiceUnavailable, "No model is loaded yet.")
 		return
 	}
 	s.lastRequest.Store(time.Now().Unix())
-	s.proxy.ServeHTTP(w, r)
+	s.proxy.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), engineURLKey{}, base)))
 }

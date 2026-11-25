@@ -490,6 +490,8 @@ export function send({ text, attachments = [] }) {
   const asst = addMessage(chat, user.id, { role: "assistant", content: "", reasoning: "", status: "streaming", model: S.model?.entry?.name });
   chat.model = S.model?.entry?.path || chat.model;
   chat.modelName = S.model?.entry?.name || chat.modelName;
+  if (!chat.title) chat.title = simpleTitle(text || attachments[0]?.name || "");
+  saveChat(chat);
   emit("thread-changed");
   renderThread();
   scrollToBottom(true);
@@ -622,7 +624,7 @@ async function generate(chat, m, opts = {}) {
   if (opts.prefill) history[history.length - 1].api.content = m.content;
   const sys = systemPrompt();
   const controller = new AbortController();
-  S.generating = { chatId: chat.id, msgId: m.id, controller, completionId: null };
+  S.generating = { chatId: chat.id, chat, msgId: m.id, controller, completionId: null };
   emit("generating", true);
   const sched = makeScheduler(m);
   const t0 = performance.now();
@@ -631,6 +633,10 @@ async function generate(chat, m, opts = {}) {
   m.stopped = false;
   try {
     const fit = await fitContext(history, sys, think);
+    if (!fit.dropped && chat.trimmedBefore) {
+      delete chat.trimmedBefore;
+      if (S.chat === chat) renderThread();
+    }
     if (fit.dropped) {
       const first = !chat.trimmedBefore;
       chat.trimmedBefore = fit.history[0]?.msg.id;
@@ -729,12 +735,17 @@ function simpleTitle(text) {
 }
 
 async function maybeTitle(chat) {
-  if (chat.title || chat.temporary) return;
+  if (chat.temporary || chat.titled) return;
   const path = activePath(chat);
+  if (path.length > 2) {
+    chat.titled = true; // only the first exchange gets a written title
+    return;
+  }
   const first = path.find((x) => x.role === "user");
   const answer = path.find((x) => x.role === "assistant" && x.content);
   if (!first || !answer) return;
-  chat.title = simpleTitle(first.content || first.attachments?.[0]?.name || "");
+  chat.titled = true;
+  chat.title ||= simpleTitle(first.content || first.attachments?.[0]?.name || "");
   saveChat(chat, true);
   const mode = S.settings.titles;
   const useModel = mode === "model" || (mode === "auto" && S.model?.profile?.modelTitles);

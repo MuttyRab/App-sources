@@ -266,12 +266,19 @@ func initialTheme(st *store.Store) (dark bool, bg string) {
 // waitForBrowser blocks until the Edge app window closes or, for a plain
 // browser tab, until no UI has been connected for a while.
 func waitForBrowser(srv *server.Server, done <-chan struct{}) {
+	started := time.Now()
 	seen := false
 	t := time.NewTicker(2 * time.Second)
 	defer t.Stop()
 	for {
 		select {
 		case <-done:
+			// An Edge process that exits right away handed the window to an
+			// already-running Edge; fall back to watching the UI connection.
+			if time.Since(started) < 10*time.Second {
+				done = nil
+				continue
+			}
 			return
 		case <-t.C:
 			n, last := srv.SSEClients()
