@@ -1,0 +1,7 @@
+/dist/
+/build/out/
+/internal/engine/payload/*.zip
+/winres/*.syso
+/*.syso
+/e2e/node_modules/
+/e2e/out/
