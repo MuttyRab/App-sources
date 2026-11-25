@@ -86,6 +86,7 @@ export function renderThread() {
   turnEls.clear();
   const path = activePath();
   const frag = document.createDocumentFragment();
+  frag.append(h("h1", { class: "sr-only", text: S.chat?.title || "New chat" }));
   const trimmedAt = S.chat?.trimmedBefore;
   path.forEach((m, i) => {
     if (trimmedAt && m.id === trimmedAt) frag.append(h("div", { class: "trim-divider", text: "Earlier messages are outside the model's memory" }));
@@ -145,7 +146,7 @@ function renderUser(m) {
   const el = h("div", { class: "turn user", "data-id": m.id });
   el.append(
     ...[attachmentsView(m.attachments),
-    m.content ? h("div", { class: "bubble", text: m.content }) : null,
+    m.content ? userBubble(m.content) : null,
     h(
       "div",
       { class: "msg-actions" },
@@ -155,6 +156,20 @@ function renderUser(m) {
     )].filter(Boolean),
   );
   return el;
+}
+
+function userBubble(text) {
+  const bubble = h("div", { class: "bubble", text });
+  const lines = text.split("\n").length;
+  if (text.length < 1400 && lines < 16) return bubble;
+  bubble.classList.add("clamped");
+  const btn = h("button", { type: "button", class: "show-more", text: "Show more", "aria-expanded": "false" });
+  btn.addEventListener("click", () => {
+    const open = bubble.classList.toggle("clamped") === false;
+    btn.textContent = open ? "Show less" : "Show more";
+    btn.setAttribute("aria-expanded", String(open));
+  });
+  return h("div", { class: "bubble-wrap" }, bubble, btn);
 }
 
 function startEdit(m) {
@@ -617,8 +632,10 @@ async function generate(chat, m, opts = {}) {
   try {
     const fit = await fitContext(history, sys, think);
     if (fit.dropped) {
+      const first = !chat.trimmedBefore;
       chat.trimmedBefore = fit.history[0]?.msg.id;
-      toast("Older messages were left out so the conversation fits the model's memory.");
+      if (first) toast("Older messages are now left out so the conversation fits the model's memory.");
+      if (S.chat === chat) renderThread();
     }
     const body = { messages: (sys ? [{ role: "system", content: sys }] : []).concat(fit.history.map((x) => x.api)), return_progress: true, cache_prompt: true, ...samplingParams(think) };
     if (caps().reasoning) {

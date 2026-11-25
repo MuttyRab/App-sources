@@ -25,12 +25,13 @@ export function openMenu(anchor, items, opts = {}) {
     return null;
   }
   closeMenu();
-  const menu = h("div", { class: "menu " + (opts.className || ""), role: "menu", tabindex: "-1" });
+  const asDialog = opts.role === "dialog";
+  const menu = h("div", { class: "menu " + (opts.className || ""), role: asDialog ? "dialog" : "menu", "aria-label": opts.label || null, tabindex: "-1" });
   if (opts.width) menu.style.width = opts.width + "px";
   for (const it of items) {
     if (!it) continue;
     if (it.divider) {
-      menu.append(h("div", { class: "menu-divider", role: "separator" }));
+      menu.append(h("div", { class: "menu-divider", role: asDialog ? null : "separator" }));
       continue;
     }
     if (it.heading) {
@@ -46,8 +47,8 @@ export function openMenu(anchor, items, opts = {}) {
       {
         type: "button",
         class: "menu-item" + (it.danger ? " danger" : "") + (it.checked ? " checked" : ""),
-        role: it.checked !== undefined ? "menuitemcheckbox" : "menuitem",
-        "aria-checked": it.checked !== undefined ? String(!!it.checked) : null,
+        role: asDialog ? null : it.checked !== undefined ? "menuitemcheckbox" : "menuitem",
+        "aria-checked": !asDialog && it.checked !== undefined ? String(!!it.checked) : null,
         disabled: !!it.disabled,
         onclick: (e) => {
           e.stopPropagation();
@@ -70,7 +71,7 @@ export function openMenu(anchor, items, opts = {}) {
     if (!menu.contains(e.target) && !anchor?.contains(e.target)) closeMenu();
   };
   const onKey = (e) => {
-    const btns = $$(".menu-item:not(:disabled)", menu);
+    const btns = $$(".menu-item:not(:disabled), .mm-row:not(:disabled)", menu);
     const i = btns.indexOf(document.activeElement);
     if (e.key === "Escape") {
       e.preventDefault();
@@ -257,9 +258,12 @@ export function toast(message, { action, timeout = 3500, kind = "" } = {}) {
     toastHost = h("div", { class: "toasts", role: "status", "aria-live": "polite" });
     document.body.append(toastHost);
   }
+  for (const existing of toastHost.children) {
+    if (existing.dataset.msg === message && !existing.classList.contains("out")) return () => {};
+  }
   const t = h(
     "div",
-    { class: "toast " + kind },
+    { class: "toast " + kind, "data-msg": message },
     h("span", { text: message }),
     action ? h("button", { type: "button", class: "toast-action", text: action.label, onclick: () => (action.fn(), dismiss()) }) : null,
   );

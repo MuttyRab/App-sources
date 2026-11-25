@@ -39,7 +39,7 @@ export function badges(e, v = {}) {
 function modelRow(v, { onClick, current }) {
   return h(
     "button",
-    { type: "button", class: "mm-row" + (v.missing ? " missing" : ""), onclick: onClick, disabled: v.missing, "aria-label": `${modelLabel(v)}${v.missing ? " (file not found)" : ""}` },
+    { type: "button", class: "mm-row" + (v.missing ? " missing" : ""), onclick: onClick, disabled: v.missing },
     h("span", { html: icon("box", 20), style: "color:var(--text-3)" }),
     h(
       "span",
@@ -91,7 +91,7 @@ export async function openModelMenu(anchor, side = "bottom") {
   items.push({ label: "Add a models folder…", icon: "folder-plus", onClick: addFolder });
   if (cur && S.engine.status !== "idle") items.push({ label: "Unload model", icon: "x", hint: "Frees the memory it uses", onClick: unload });
   items.push({ label: "Model & performance settings", icon: "sliders-horizontal", onClick: () => actions.openSettings("model") });
-  openMenu(anchor, items, { className: "model-menu", side, align: "start", width: 380 });
+  openMenu(anchor, items, { className: "model-menu", side, align: "start", width: 380, role: "dialog", label: "Models" });
 }
 
 export async function pickAndLoad() {
@@ -244,7 +244,7 @@ export function modelSwitch() {
   const st = S.engine.status;
   const btn = h(
     "button",
-    { type: "button", class: "model-switch", "aria-haspopup": "menu", "aria-expanded": "false", "aria-label": "Choose model", onclick: (ev) => openModelMenu(ev.currentTarget) },
+    { type: "button", class: "model-switch", "aria-haspopup": "dialog", "aria-expanded": "false", "data-tip": "Choose a model", onclick: (ev) => openModelMenu(ev.currentTarget) },
     h("span", { class: "ms-name", text: e ? modelLabel(e) : "LocalChat" }),
     e && st !== "ready" ? null : e ? null : h("span", { class: "ms-sub", text: "Choose a model" }),
     h("span", { class: "ms-chev", html: icon("chevron-down", 18) }),

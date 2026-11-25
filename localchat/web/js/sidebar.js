@@ -110,7 +110,7 @@ function renderFoot() {
       {
         type: "button",
         class: "profile-btn",
-        "aria-label": "Settings and more",
+        "aria-haspopup": "menu",
         onclick: (e) =>
           openMenu(e.currentTarget, [
             { heading: hw?.cpuName || "This PC" },
