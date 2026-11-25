@@ -13,6 +13,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 	"unicode/utf8"
 )
 
@@ -224,7 +225,16 @@ func (s *Store) Search(q string, limit int) []SearchHit {
 }
 
 func snippet(text, word string) string {
-	i := strings.Index(text, word)
+	// Prefer a match in the messages over one in the title (the first line).
+	i := -1
+	if nl := strings.IndexByte(text, '\n'); nl >= 0 {
+		if j := strings.Index(text[nl+1:], word); j >= 0 {
+			i = nl + 1 + j
+		}
+	}
+	if i < 0 {
+		i = strings.Index(text, word)
+	}
 	if i < 0 {
 		return ""
 	}
@@ -274,13 +284,19 @@ func (s *Store) WriteJSON(name string, data []byte) error {
 // Root returns the data directory.
 func (s *Store) Root() string { return s.root }
 
-// WriteFileAtomic writes data to path via a temporary file and rename.
+var writeMu sync.Mutex
+
+// WriteFileAtomic writes data to path via a uniquely named temporary file
+// and a rename, so concurrent writers never clobber each other's temp file
+// and readers never see a partial file.
 func WriteFileAtomic(path string, data []byte) error {
-	tmp := path + ".tmp"
-	f, err := os.OpenFile(tmp, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
+	writeMu.Lock()
+	defer writeMu.Unlock()
+	f, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".*.tmp")
 	if err != nil {
 		return err
 	}
+	tmp := f.Name()
 	if _, err := f.Write(data); err != nil {
 		f.Close()
 		os.Remove(tmp)
@@ -295,5 +311,16 @@ func WriteFileAtomic(path string, data []byte) error {
 		os.Remove(tmp)
 		return err
 	}
-	return os.Rename(tmp, path)
+	// On Windows a virus scanner or indexer can briefly hold the target open.
+	for i := 0; ; i++ {
+		err = os.Rename(tmp, path)
+		if err == nil || i == 4 {
+			break
+		}
+		time.Sleep(time.Duration(30*(i+1)) * time.Millisecond)
+	}
+	if err != nil {
+		os.Remove(tmp)
+	}
+	return err
 }

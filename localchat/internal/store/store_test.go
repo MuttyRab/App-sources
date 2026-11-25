@@ -98,3 +98,25 @@ func TestStore_JSONDocs(t *testing.T) {
 		t.Fatal("damaged settings should be reported and reset")
 	}
 }
+
+func TestStore_ConcurrentPutsOfSameChat(t *testing.T) {
+	s, _ := Open(t.TempDir())
+	errs := make(chan error, 40)
+	for i := 0; i < 40; i++ {
+		go func(i int) {
+			errs <- s.Put(&Chat{ID: "same", Title: "t", Updated: int64(i), Messages: json.RawMessage(`{}`)})
+		}(i)
+	}
+	for i := 0; i < 40; i++ {
+		if err := <-errs; err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := s.Get("same"); err != nil {
+		t.Fatal(err)
+	}
+	left, _ := filepath.Glob(filepath.Join(s.Root(), "chats", "*.tmp"))
+	if len(left) != 0 {
+		t.Fatalf("temp files left: %v", left)
+	}
+}
