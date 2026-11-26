@@ -5,7 +5,7 @@
 #
 # Output: $WORK/sd-win (sd-server.exe, ggml DLLs, gpu/ggml-vulkan.dll).
 # Requirements: as build-engine.sh, plus Vulkan headers + import library
-# (VK_SYSROOT) and a recent glslc (GLSLC). See build-vulkan-deps.sh.
+# and a recent glslc from build-vulkan-deps.sh.
 # Usage: build/build-sd.sh [stable-diffusion.cpp commit]
 set -euo pipefail
 
@@ -16,7 +16,7 @@ SRC="$WORK/stable-diffusion.cpp"
 BUILD="$WORK/sd-win-build"
 STAGE="$WORK/sd-win"
 VK_SYSROOT="${VK_SYSROOT:-$WORK/vk/sysroot}"
-GLSLC="${GLSLC:-glslc}"
+GLSLC="${GLSLC:-$WORK/vk/glslc}"
 
 mkdir -p "$WORK"
 if [ ! -d "$SRC/.git" ]; then

@@ -60,7 +60,7 @@ const check = (name, ok, detail = "") => {
   await page.keyboard.press("Escape");
 
   // Chat with model 1.
-  if (await page.locator('.tool-pill[aria-pressed="true"]').count()) await page.locator(".tool-pill").click();
+  if (await page.locator('.tool-pill[aria-pressed="true"]').count()) await page.locator(".tool-pill[aria-pressed]").click();
   await send("My name is Rab and my favorite color is green. Reply with just: noted.");
   await waitDone();
 

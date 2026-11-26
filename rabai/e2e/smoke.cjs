@@ -70,7 +70,7 @@ function check(name, ok, detail = "") {
   check("regenerate creates version 2/2", ver === "2/2", ver);
 
   // Turn thinking off and ask again.
-  await page.locator(".tool-pill").click();
+  await page.locator(".tool-pill[aria-pressed]").click();
   await box.fill("What is 2+2? Answer with just the number.");
   await box.press("Enter");
   await page.waitForTimeout(500);

@@ -809,6 +809,8 @@ function placeCaret(md) {
   if (target && !["PRE", "TABLE"].includes(target.tagName) && !target.closest?.(".code-block, .table-wrap, .katex")) target.append(h("span", { class: "caret", "aria-hidden": "true" }));
 }
 
+const VISUAL_HINT = /\b(looks? like|visuali[sz]e|pictures?|images?|photos?|draw|drawing|paint|sketch|illustrat\w*|render|design|logo|icon|poster|wallpaper|art(?:work)?|show me|imagine|portrait|scene|cartoon|anime|comic|sticker|meme)\b/i;
+
 /** The picture request a user message makes, or null. */
 function pictureRequest(chat, m) {
   const path = activePath(chat);
@@ -894,7 +896,10 @@ async function generate(chat, m, opts = {}) {
     }
     const body = { messages: (sys ? [{ role: "system", content: sys }] : []).concat(fit.history.map((x) => x.api)), return_progress: true, cache_prompt: true, ...samplingParams(think) };
     // Let the model make pictures itself when it knows how to use tools.
-    const toolOK = caps().tools && imagesReady() && S.settings.images.auto !== false && !opts.prefill;
+    // Small models given a tool tend to use it for everything, so offer it
+    // only when the message is about something visual.
+    const lastUser = [...fit.history].reverse().find((x) => x.msg.role === "user")?.msg.content || "";
+    const toolOK = caps().tools && imagesReady() && S.settings.images.auto !== false && !opts.prefill && VISUAL_HINT.test(lastUser);
     if (toolOK) {
       body.tools = [IMAGE_TOOL];
       body.tool_choice = "auto";

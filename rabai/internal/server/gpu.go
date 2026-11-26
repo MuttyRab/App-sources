@@ -160,6 +160,7 @@ func (s *Server) tune(e *models.Entry, lm *loadedModel, dev accel.Device, sleep 
 	test := lm.Profile
 	test.Ctx = 2048
 	test.CacheRAMMiB = 0
+	test.MMProj = "" // the image add-on doesn't affect text speed
 	base := test.Args()
 	bench := func(stage string, prog float64, args, env []string) *accel.Bench {
 		if !update(stage, prog) {

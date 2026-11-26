@@ -7,7 +7,7 @@
   "RT_MANIFEST": {
     "#1": {
       "0409": {
-        "identity": { "name": "RabAI", "version": "1.0.1.0" },
+        "identity": { "name": "RabAI", "version": "1.1.0.0" },
         "description": "RabAI",
         "minimum-os": "win10",
         "execution-level": "as invoker",
@@ -29,18 +29,18 @@
   "RT_VERSION": {
     "#1": {
       "0000": {
-        "fixed": { "file_version": "1.0.1.0", "product_version": "1.0.1.0" },
+        "fixed": { "file_version": "1.1.0.0", "product_version": "1.1.0.0" },
         "info": {
           "0409": {
             "Comments": "Chat with GGUF models on your own PC",
             "CompanyName": "RabAI",
             "FileDescription": "RabAI",
-            "FileVersion": "1.0.1",
+            "FileVersion": "1.1.0",
             "InternalName": "RabAI",
             "LegalCopyright": "MIT License",
             "OriginalFilename": "RabAI.exe",
             "ProductName": "RabAI",
-            "ProductVersion": "1.0.1"
+            "ProductVersion": "1.1.0"
           }
         }
       }

@@ -88,7 +88,29 @@ async function seed(page) {
     msg("u3", "a3", "user", "Write a long story."),
     msg("a4", "u3", "assistant", "Once upon a time, in a kingdom of sorted arrays, there lived a pivot named Quinn…", { model: "Qwen3 0.6B", status: "done", finish: "length", stats: { tps: 10.2, n: 2048 } }),
   ], { sel: { u1: "a2" } });
-  const chats = [showcase];
+  // A chat with a generated picture, an audio clip and a video.
+  const upload = (b64, ext) =>
+    page.evaluate(async ([b64, ext]) => {
+      const bin = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
+      return (await (await fetch("/api/media?ext=" + ext, { method: "POST", body: bin })).json()).id;
+    }, [b64, ext]);
+  const png = fs.readFileSync(pngPath).toString("base64");
+  const pic = await upload(png, "png");
+  const wav = Buffer.alloc(44 + 16000);
+  wav.write("RIFF", 0); wav.writeUInt32LE(36 + 16000, 4); wav.write("WAVEfmt ", 8); wav.writeUInt32LE(16, 16); wav.writeUInt16LE(1, 20); wav.writeUInt16LE(1, 22);
+  wav.writeUInt32LE(16000, 24); wav.writeUInt32LE(32000, 28); wav.writeUInt16LE(2, 32); wav.writeUInt16LE(16, 34); wav.write("data", 36); wav.writeUInt32LE(16000, 40);
+  const audio = await upload(wav.toString("base64"), "wav");
+  const pictures = buildChat("pictures", "Cozy cabin picture", now - 0.05 * day, [
+    msg("p1", "root", "user", "Draw a cozy cabin in a snowy forest at night with warm light in the windows"),
+    msg("p2", "p1", "assistant", "", { model: "SD Turbo", status: "done", image: { status: "done", media: pic, width: 512, height: 512, prompt: "a cozy cabin in a snowy forest at night with warm light in the windows", seconds: 12.4, model: "SD Turbo", seed: 7 } }),
+    msg("p3", "p2", "user", "Here's the sound of the wind and a clip of the walk there. What do you think?", { attachments: [
+      { type: "audio", name: "wind-recording-from-the-cabin-trip.wav", media: audio, duration: 92, size: 2400000 },
+      { type: "video", name: "walk.mp4", duration: 31, frames: [0, 1, 2, 3].map((i) => ({ media: pic, t: i * 8 })), size: 8000000 },
+      { type: "text", name: "trip-plan.pdf", text: "--- Page 1 ---\nPlan", size: 120000, doc: "pdf" },
+    ] }),
+    msg("p4", "p3", "assistant", "The recording sounds calm, and the video shows a lovely snowy path.", { model: "Qwen3 0.6B", status: "done", stats: { tps: 9.1, n: 40 } }),
+  ]);
+  const chats = [showcase, pictures];
   const titles = [
     "Plan a weekend trip to the coast with a tight budget and a dog",
     "Fix my Python import error",
@@ -266,6 +288,19 @@ async function audit(page, label) {
       await page.locator("#composer-input").fill("Line one of a draft\nLine two\nLine three");
       await shot("07-composer-filled");
       await page.locator("#composer-input").fill("");
+      // the picture chat
+      if (sizeName === "narrow") await page.getByRole("button", { name: "Open sidebar" }).click();
+      await page.locator(".chat-link", { hasText: "Cozy cabin" }).click();
+      await page.waitForSelector(".gen-image");
+      await page.locator("#content").evaluate((c) => (c.scrollTop = 0));
+      await shot("07b-picture");
+      await page.locator("#content").evaluate((c) => (c.scrollTop = c.scrollHeight));
+      await shot("07c-audio-video");
+      // image mode in the message box
+      await page.getByRole("button", { name: "Add photos and files" }).click();
+      await page.locator(".menu .menu-item", { hasText: "Create image" }).click().catch(() => {});
+      await shot("07d-image-mode");
+      await page.locator(".image-pill .pill-x").click().catch(() => {});
       if (sizeName === "narrow") {
         await ctx.close();
         continue;
@@ -293,7 +328,7 @@ async function audit(page, label) {
       await page.waitForTimeout(700);
       await shot("12-tooltip");
       // modals
-      for (const [tab, n] of [["General", "13"], ["Personalization", "14"], ["Model & performance", "15"], ["Speech", "16"], ["Data controls", "17"], ["About", "18"]]) {
+      for (const [tab, n] of [["General", "13"], ["Personalization", "14"], ["Model & performance", "15"], ["Pictures", "15b"], ["Speech", "16"], ["Data controls", "17"], ["About", "18"]]) {
         if (tab === "General") await page.keyboard.press("Control+,");
         await page.getByRole("tab", { name: tab }).click();
         await shot(`${n}-settings-${tab.split(" ")[0].toLowerCase()}`);
@@ -309,6 +344,9 @@ async function audit(page, label) {
       await page.getByRole("button", { name: "Models", exact: true }).click();
       await page.waitForSelector(".models-modal .mgr-row");
       await shot("21-models");
+      await page.getByRole("tab", { name: "Image models" }).click();
+      await page.waitForSelector(".models-modal .img-row, .models-modal .img-empty");
+      await shot("21b-image-models");
       await page.keyboard.press("Escape");
       await page.keyboard.press("Control+/");
       await shot("22-shortcuts");

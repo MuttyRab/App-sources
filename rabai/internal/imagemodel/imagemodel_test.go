@@ -169,3 +169,16 @@ func TestNameFromFile(t *testing.T) {
 		}
 	}
 }
+
+func TestTurboFineTuneSettings(t *testing.T) {
+	r := RecipeByID("sdxl-turbo")
+	if s := DefaultSettings(r, "sd_xl_turbo_1.0_fp16.safetensors"); s.Steps != 1 || s.Width != 512 {
+		t.Errorf("official SDXL Turbo: %+v", s)
+	}
+	if s := DefaultSettings(r, "dreamshaper-xl-v2-turbo-Q4_K.gguf"); s.Steps != 6 || s.CFG != 1.5 || s.Width != 1024 {
+		t.Errorf("DreamShaper XL Turbo: %+v", s)
+	}
+	if s := DefaultSettings(RecipeByID("sd1-checkpoint"), "DreamShaper8_LCM_q8_0.gguf"); s.Steps != 6 || s.Sampler != "lcm" {
+		t.Errorf("LCM: %+v", s)
+	}
+}

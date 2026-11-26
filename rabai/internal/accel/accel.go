@@ -11,6 +11,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
 	"regexp"
@@ -266,7 +267,9 @@ func Choose(cpu, gpu *Bench) (mode string, reason string) {
 	case Garbage(gpu.Text) || !Agree(cpu.Text, gpu.Text):
 		return ModeCPU, "The graphics card gave wrong results with this model (often an old driver), so it uses the processor."
 	case gpu.Seconds*1.15 < cpu.Seconds:
-		return ModeGPU, "The graphics card is faster for this model."
+		return ModeGPU, fmt.Sprintf("The graphics card is %.1f× faster for this model.", cpu.Seconds/gpu.Seconds)
+	case cpu.Seconds < gpu.Seconds:
+		return ModeCPU, "The processor is faster than the graphics card for this model, so it uses the processor."
 	}
-	return ModeCPU, "The processor is as fast as the graphics card for this model, so it uses the processor."
+	return ModeCPU, "The processor is about as fast as the graphics card for this model, so it uses the processor."
 }

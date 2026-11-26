@@ -428,7 +428,10 @@ export async function scan(showToast) {
   try {
     const r = await api.scan();
     await refreshModels();
-    if (showToast) toast(r.found?.length ? `Found ${r.found.length} model${r.found.length === 1 ? "" : "s"} on this PC.` : "No GGUF models were found in the usual folders.");
+    const nImg = r.images?.length || 0;
+    if (nImg) await refreshImages();
+    const n = (r.found?.length || 0) + nImg;
+    if (showToast) toast(n ? `Found ${n} model${n === 1 ? "" : "s"} on this PC${nImg ? ` (${nImg} for pictures)` : ""}.` : "No models were found in the usual folders.");
     return r.found || [];
   } catch (e) {
     toast(e.message, { kind: "error" });

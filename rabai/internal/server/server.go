@@ -734,12 +734,29 @@ func (s *Server) scanDirs() []string {
 }
 
 func (s *Server) handleScan(w http.ResponseWriter, r *http.Request) {
+	var others []string
+	var omu sync.Mutex
+	s.cfg.Library.ScanOther = func(p string) {
+		omu.Lock()
+		others = append(others, p)
+		omu.Unlock()
+	}
 	found := s.cfg.Library.Scan(s.scanDirs(), s.cfg.OllamaDir)
+	s.cfg.Library.ScanOther = nil
 	out := make([]modelView, 0, len(found))
 	for _, e := range found {
 		out = append(out, s.view(e))
 	}
-	writeJSON(w, map[string]any{"found": out, "dirs": s.scanDirs()})
+	images := []imageView{}
+	for _, p := range others {
+		if e, err := s.cfg.ImageLib.Add(p); err == nil {
+			images = append(images, s.imageView(*e))
+		}
+	}
+	if len(images) > 0 {
+		s.publish("images", nil)
+	}
+	writeJSON(w, map[string]any{"found": out, "images": images, "dirs": s.scanDirs()})
 }
 
 func (s *Server) handleAddFolder(w http.ResponseWriter, r *http.Request) {

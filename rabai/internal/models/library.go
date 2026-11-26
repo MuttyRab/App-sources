@@ -45,6 +45,10 @@ type Entry struct {
 
 // Library is the persistent list of known models.
 type Library struct {
+	// ScanOther, when set, receives files Scan finds that aren't chat models
+	// but may be image models (non-chat GGUFs, big safetensors/ckpt files).
+	ScanOther func(path string)
+
 	path string
 	mu   sync.Mutex
 	data libraryFile
@@ -358,6 +362,14 @@ func (l *Library) Scan(dirs []string, ollamaDir string) []Entry {
 				return nil
 			}
 			name := strings.ToLower(d.Name())
+			if l.ScanOther != nil && !seen[p] && (strings.HasSuffix(name, ".safetensors") || strings.HasSuffix(name, ".sft") || strings.HasSuffix(name, ".ckpt")) {
+				// Image models: big weight files that aren't GGUF chat models.
+				if info, err := d.Info(); err == nil && info.Size() >= 900<<20 {
+					seen[p] = true
+					l.ScanOther(p)
+				}
+				return nil
+			}
 			if !strings.HasSuffix(name, ".gguf") || strings.Contains(name, "mmproj") || seen[p] {
 				return nil
 			}
@@ -367,6 +379,11 @@ func (l *Library) Scan(dirs []string, ollamaDir string) []Entry {
 			seen[p] = true
 			if e, _, err := Inspect(p); err == nil {
 				found = append(found, e)
+			} else if l.ScanOther != nil {
+				var nc ErrNotChatModel
+				if errors.As(err, &nc) && strings.Contains(nc.Reason, "doesn't contain a chat model") {
+					l.ScanOther(p)
+				}
 			}
 			return nil
 		})

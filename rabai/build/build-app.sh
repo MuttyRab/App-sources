@@ -4,12 +4,15 @@
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/.." && pwd)"
-VERSION="${VERSION:-1.0.1}"
+VERSION="${VERSION:-1.1.0}"
 cd "$ROOT"
 
 PAYLOAD=internal/engine/payload/engine-win-x64.zip
 [ -f "$PAYLOAD" ] || { echo "missing $PAYLOAD: run build/build-engine.sh" >&2; exit 1; }
 ENGINE_VERSION="$(unzip -p "$PAYLOAD" VERSION.txt | tr -d '\r\n')"
+if SD_VERSION="$(unzip -p "$PAYLOAD" sd/VERSION.txt 2>/dev/null | tr -d '\r\n')" && [ -n "$SD_VERSION" ]; then
+  ENGINE_VERSION="$ENGINE_VERSION, $SD_VERSION"
+fi
 
 WINRES="$(go env GOPATH)/bin/go-winres"
 [ -x "$WINRES" ] || go install github.com/tc-hib/go-winres@v0.3.3

@@ -31,7 +31,7 @@ import (
 
 // Set at build time with -ldflags "-X main.version=... -X main.engineVersion=...".
 var (
-	version       = "1.0.1"
+	version       = "1.1.0"
 	engineVersion = "llama.cpp"
 )
 

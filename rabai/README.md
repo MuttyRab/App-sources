@@ -1,7 +1,7 @@
 # RabAI
 
-A ChatGPT-style app for Windows that runs GGUF language models entirely on your PC.
-One file, no installer, no internet connection, no account.
+A ChatGPT-style app for Windows that runs language models and image models entirely
+on your PC. One file, no installer, no internet connection, no account.
 
 ![RabAI](web/img/app-icon.png)
 
@@ -34,6 +34,70 @@ model.
 
 Models load one at a time so they don't compete for your RAM; switching takes a few
 seconds (faster for models you've used recently).
+
+## Making pictures
+
+Add an image model with **Add model files** (the same button as chat models): a
+Stable Diffusion 1.x/2.x, SDXL, SD3, FLUX, Z-Image, Qwen Image or other model that
+[stable-diffusion.cpp](https://github.com/leejet/stable-diffusion.cpp) supports, as
+`.gguf` or `.safetensors`. Models that come in several files (a text encoder, a VAE…)
+are paired automatically when the files are in the same folder or the usual
+`text_encoders`, `vae` and `clip` folders next to it; otherwise **Models → Image models**
+says what's missing and lets you choose the file. Your chat models can double as
+text encoders (for example Qwen3 4B for Z-Image).
+
+Then just ask: "draw a cat astronaut", "make a logo for my bakery". The picture appears
+in the chat with a live preview while it's made. You can also turn on **+ → Create
+image** to describe pictures directly and pick a shape (square, portrait, landscape).
+Under each picture: download, copy the prompt, **edit** (change the picture with a new
+description) and **make another**. Chat models that can use tools (Qwen3, Llama 3.x,
+Mistral…) also decide on their own when a picture would answer you.
+
+Good image models for older laptops:
+
+| Model | Size | Without a graphics card | Download |
+| --- | --- | --- | --- |
+| SD-Turbo (Q8_0) | 2.1 GB | fastest: about 10–20 s per picture, 512×512 | [sd_turbo_q8_0.gguf](https://huggingface.co/samoudi/sd-turbo-gguf/resolve/main/sd_turbo_q8_0.gguf) |
+| DreamShaper 8 LCM (Q8_0) | 1.8 GB | about 1–2 min, nicer art and photos | [DreamShaper8_LCM_q8_0.gguf](https://huggingface.co/haven-ai-companion/dreamshaper8-lcm-gguf/resolve/main/DreamShaper8_LCM_q8_0.gguf) |
+| DreamShaper XL Turbo (Q4_K) | 2.8 GB | best quality, a few minutes (much faster if your graphics card helps) | [dreamshaper-xl-v2-turbo-Q4_K_S.gguf](https://huggingface.co/off-grid-ai/dreamshaper-xl-v2-turbo-GGUF/resolve/main/dreamshaper-xl-v2-turbo-Q4_K_S.gguf) |
+
+Times are from a 4-core laptop-class processor; RabAI picks the right settings for each
+(steps, guidance, sampler) from the model file.
+
+On the processor RabAI uses a tiny decoder (TAESD) for these, which makes pictures about
+three times faster with nearly the same look (**Settings → Pictures** to change it). If
+both models don't fit in memory together, the chat model pauses while a picture is made
+and comes back afterwards.
+
+## Graphics cards
+
+RabAI includes a Vulkan GPU engine that works with the normal NVIDIA, AMD and Intel
+drivers (no CUDA needed). Graphics cards in laptops are often not faster than the
+processor, and old drivers can compute wrong results, so nothing is assumed: the first
+time you load a model, RabAI runs it briefly on the graphics card and on the processor
+("Testing your graphics card"), compares the speed **and** checks the answers match,
+and keeps whichever is better for that model. If the card gives wrong results it tries
+a safe mode without the features old drivers get wrong, and otherwise uses the processor.
+The GPU library is only loaded for models that use the card, so a broken driver can't
+affect anything else. Image models are tested the same way with a small test picture.
+
+**Settings → Model & performance → Graphics card** can force it on or off, and **Test
+again** re-measures after a driver update.
+
+## Attachments
+
+The **+** button and drag-and-drop accept:
+
+- **Pictures** for vision models (a model with its `mmproj` file next to it)
+- **PDFs** (text is extracted), **Word**, **Excel**, **PowerPoint** and OpenDocument files,
+  and any text or code file
+- **Audio** (MP3, WAV, M4A, OGG, FLAC…) for models that understand speech and sound
+  (for example Qwen2.5-Omni, Voxtral, Ultravox, Gemma 3n, each with its `mmproj` file)
+- **Video**: RabAI takes up to eight frames for vision models and the soundtrack for
+  audio models
+
+When the current model can't use a kind of file, RabAI says so and tells the model that
+something was attached, so the answer makes sense.
 
 ## Which model should I use?
 
@@ -85,7 +149,9 @@ You can override all of this in **Settings → Model & performance**.
 - Streaming replies with Markdown, tables, code highlighting with copy buttons, and math
 - Collapsible "Thought for N s" sections for reasoning models
 - Regenerate, edit-and-resend with version arrows (‹ 2/3 ›), branch into a new chat
-- Image and text/code file attachments, drag and drop, long pastes become attachments
+- Picture generation with image models, live previews, edits and downloads
+- Attachments: pictures, PDFs, Word/Excel/PowerPoint, text and code, audio and video;
+  drag and drop; long pastes become attachments
 - Temporary chats that are never saved
 - Custom instructions and response style (Personalization), light/dark/system theme,
   accent colors
@@ -111,8 +177,10 @@ accepts connections from RabAI's own window.
 On Ubuntu 24.04 with Go 1.24:
 
 ```bash
-sudo apt-get install -y mingw-w64 g++-mingw-w64-x86-64-posix cmake ninja-build zip
-build/build-engine.sh        # compiles llama.cpp v1.0.0 for Windows into the payload zip
+sudo apt-get install -y mingw-w64 g++-mingw-w64-x86-64-posix cmake ninja-build zip python3-numpy
+build/build-vulkan-deps.sh   # Vulkan headers, import library and a recent glslc
+build/build-sd.sh            # compiles stable-diffusion.cpp's sd-server for Windows
+build/build-engine.sh        # compiles llama.cpp v1.0.0 and packs both engines into the payload zip
 build/build-app.sh           # produces dist/RabAI.exe
 go test ./internal/...       # unit tests
 ```
@@ -122,10 +190,15 @@ The end-to-end tests in `e2e/` drive the UI with Playwright against a running in
 dark mode at several window sizes and reports anything overlapping, clipped or spilling
 out of the window. `e2e/thinking.cjs` checks a thinking model with Think on and off:
 no reasoning or raw think tags in the answer, and only effort levels the model knows.
+`e2e/images.cjs` makes pictures (plain requests, image mode, shapes, edits, downloads)
+and attaches PDF, Word, Excel, PowerPoint, audio and video files. `--sd-engine` points
+RabAI at a stable-diffusion.cpp `sd-server` for development.
 
 ## License and credits
 
 RabAI is an independent project and isn't affiliated with OpenAI. It uses
-[llama.cpp](https://github.com/ggml-org/llama.cpp) (MIT), go-webview2 (MIT), marked (MIT),
-DOMPurify (Apache-2.0/MPL-2.0), highlight.js (BSD-3-Clause), KaTeX (MIT) and Lucide icons
-(ISC). License texts are in `web/vendor/` and in the engine folder.
+[llama.cpp](https://github.com/ggml-org/llama.cpp) (MIT),
+[stable-diffusion.cpp](https://github.com/leejet/stable-diffusion.cpp) (MIT), TAESD (MIT),
+go-webview2 (MIT), marked (MIT), DOMPurify (Apache-2.0/MPL-2.0), highlight.js
+(BSD-3-Clause), KaTeX (MIT), pdf.js (Apache-2.0) and Lucide icons (ISC). Image models
+you download come with their own licenses. License texts are in `web/vendor/` and in the engine folder.

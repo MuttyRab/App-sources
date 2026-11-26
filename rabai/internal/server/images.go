@@ -351,6 +351,11 @@ func (s *Server) runImageJob(ctx context.Context, id string, e *imagemodel.Entry
 		send(imageEvent{Status: "cancelled"})
 		return
 	}
+	// On the processor, models made for 1024×1024 run at about 768×768
+	// unless the user asked for the best quality: roughly twice as fast.
+	if mode == "cpu" && s.imagePrefs().Quality != "best" && len(greq.Init) == 0 && greq.Width*greq.Height > 800*800 {
+		greq.Width, greq.Height = fitSize(greq.Width, greq.Height, 768*768, e.Settings.SizeMultiple)
+	}
 	resume := s.makeRoomForImage(e, mode)
 	defer resume()
 

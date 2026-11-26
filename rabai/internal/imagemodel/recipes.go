@@ -91,6 +91,8 @@ func (r *Recipe) HasFeature(f string) bool {
 	return false
 }
 
+var officialSDXLTurbo = regexp.MustCompile(`(?i)(sd_?xl_?turbo|sdxl-turbo|stable-diffusion-xl-1\.0-turbo|sdxl_turbo)`)
+
 var fewStep = regexp.MustCompile(`(?i)(turbo|lightning|hyper|dmd2?|lcm|flash|schnell|distill)`)
 
 // ChooseRecipe picks the recipe for a family, using the file name to tell
@@ -339,6 +341,12 @@ func DefaultSettings(r *Recipe, path string) Settings {
 		s.CFG = 7
 	}
 	n := strings.ToLower(filepath.Base(path))
+	if r.ID == "sdxl-turbo" && !officialSDXLTurbo.MatchString(n) {
+		// Community "XL Turbo" fine-tunes (DreamShaper XL Turbo, …) are made
+		// for a few steps at full size, unlike Stability's one-step model.
+		s.Width, s.Height, s.Steps, s.CFG, s.Sampler, s.Scheduler = 1024, 1024, 6, 1.5, "euler", ""
+		return s
+	}
 	if strings.HasPrefix(r.ID, "sd1") || strings.HasPrefix(r.ID, "sdxl") || strings.HasPrefix(r.ID, "sd2") {
 		switch {
 		case strings.Contains(n, "lcm"):

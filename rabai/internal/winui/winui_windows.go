@@ -133,13 +133,23 @@ func (n *Native) PickFolder() (string, error) {
 
 // SaveFile shows "Save as" and writes data to the chosen file.
 func (n *Native) SaveFile(suggested, ext string, data []byte) (string, error) {
+	if d := os.Getenv("RABAI_SAVE_DIR"); d != "" { // automated testing
+		path := filepath.Join(d, filepath.Base(suggested))
+		return path, os.WriteFile(path, data, 0o644)
+	}
 	var path string
 	var err error
-	label := strings.ToUpper(strings.TrimPrefix(ext, ".")) + " file"
+	ext = strings.TrimPrefix(ext, ".")
+	label := strings.ToUpper(ext) + " file"
+	title := "Export"
+	switch strings.ToLower(ext) {
+	case "png", "jpg", "jpeg", "webp":
+		label, title = "Picture ("+strings.ToUpper(ext)+")", "Save picture"
+	}
 	n.onUIThread(func() {
 		path, err = fileDialog(n.hwnd(), dialogOptions{
-			title: "Export", save: true, fileName: suggested, defExt: strings.TrimPrefix(ext, "."),
-			filters: [][2]string{{label, "*." + strings.TrimPrefix(ext, ".")}, {"All files", "*.*"}},
+			title: title, save: true, fileName: suggested, defExt: ext,
+			filters: [][2]string{{label, "*." + ext}, {"All files", "*.*"}},
 		})
 	})
 	if err != nil || path == "" {
